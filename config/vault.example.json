@@ -1,0 +1,14 @@
+{
+  "routes": {
+    "local": {
+      "upstream": "http://host.docker.internal:8080/v1",
+      "headers": { "Authorization": "Bearer ta-cle-ici" }
+    },
+    "deepseek": {
+      "upstream": "https://api.deepseek.com",
+      "headers": { "Authorization": "Bearer sk-ta-cle-ici" }
+    }
+  },
+  "telegram": { "token": "123456:jeton-du-bot" },
+  "allow": []
+}

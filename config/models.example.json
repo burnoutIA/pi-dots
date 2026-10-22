@@ -1,0 +1,19 @@
+{
+  "providers": {
+    "local": {
+      "baseUrl": "http://dot-vault:8080/local",
+      "api": "openai-completions",
+      "apiKey": "vault",
+      "models": [
+        {
+          "id": "mon-modele",
+          "name": "Mon modèle local",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 131072,
+          "maxTokens": 32768
+        }
+      ]
+    }
+  }
+}

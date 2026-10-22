@@ -1,0 +1,7 @@
+# Variables de l'utilisateur : jamais dans le dépôt
+.env
+config/*
+!config/*.example.*
+
+# État du dot (mémoire, sessions, navigateur, travail) : propre à chaque machine
+state/

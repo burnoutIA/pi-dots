@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "ketch": {
+      "command": "ketch",
+      "args": ["mcp", "serve"],
+      "env": {
+        "KETCH_TAGS_PATH": "/dot/memory/ketch-tags.db"
+      },
+      "timeout": 120,
+      "exposure": "direct",
+      "toolExposure": { "crawl": "hidden" },
+      "description": "Recherche web, documentation de librairies, code open source et lecture de pages web (sans clé API)."
+    },
+    "playwright": {
+      "command": "playwright-mcp",
+      "args": [
+        "--headless",
+        "--no-sandbox",
+        "--browser", "chromium",
+        "--user-data-dir", "/dot/browser",
+        "--output-dir", "/dot/workspace/captures",
+        "--proxy-server", "http://dot-vault:8080"
+      ],
+      "timeout": 300,
+      "exposure": "direct",
+      "description": "Un vrai navigateur (Chromium) : ouvrir des pages, cliquer, remplir des formulaires, faire des captures. Le profil est gardé d'un démarrage à l'autre."
+    }
+  }
+}

@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# dot — lancer, arrêter et rejoindre l'environnement du dot (docker ou podman).
+#
+#   ./dot build     construire l'image
+#   ./dot start     lancer le coffre puis le dot (il reprend là où il en était)
+#   ./dot stop      tout arrêter (l'état reste dans state/)
+#   ./dot attach    rejoindre le terminal de pi (Ctrl-b d pour en sortir sans l'arrêter)
+#   ./dot shell     un shell dans l'environnement
+#   ./dot journal   ce que le dot a fait aujourd'hui (-p problèmes, -f en direct, --runs, ou une date)
+#   ./dot logs      sortie brute des conteneurs
+#   ./dot status    en marche ou non
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAME="${DOT_NAME:-dot}"
+VAULT=dot-vault                 # nom fixe : le dot le joint à http://dot-vault:8080
+IMAGE="${DOT_IMAGE:-dots:latest}"
+NET_INTERNAL=dot-internal       # le dot et le coffre, sans aucune sortie
+NET_EXTERNAL=dot-external       # le coffre seul : internet et la machine hôte
+PROXY="http://$VAULT:8080"
+
+if [ -n "${DOT_ENGINE:-}" ]; then ENGINE="$DOT_ENGINE"
+elif command -v podman >/dev/null; then ENGINE=podman
+elif command -v docker >/dev/null; then ENGINE=docker
+else echo "Il faut docker ou podman." >&2; exit 1
+fi
+
+running() { [ "$($ENGINE inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
+network() { $ENGINE network inspect "$1" >/dev/null 2>&1 || $ENGINE network create "${@:2}" "$1" >/dev/null; }
+setting() { grep -E "^$1=" "$ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"' '; }
+
+# Le dot ne doit voir aucun secret : ils vivent dans config/vault.json, lu par le coffre seul.
+check_secrets() {
+  local leaks
+  leaks="$(grep -E '^[A-Z0-9_]*(API_KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*=.+' "$ROOT/.env" | cut -d= -f1 || true)"
+  if [ -n "$leaks" ]; then
+    echo "Ces variables de .env ressemblent à des secrets : $(echo $leaks)." >&2
+    echo "Le dot les verrait. Déplacez-les dans config/vault.json (voir config/vault.example.json)." >&2
+    exit 1
+  fi
+  if grep -qE '"apiKey"\s*:\s*"(sk-|[A-Za-z0-9_-]{24,})' "$ROOT/config/models.json" 2>/dev/null; then
+    echo "config/models.json contient une clé d'API : le dot la verrait." >&2
+    echo "Mettez la clé dans config/vault.json, et dans models.json \"apiKey\": \"vault\" avec \"baseUrl\": \"$PROXY/<route>\"." >&2
+    exit 1
+  fi
+}
+
+start_vault() {
+  running "$VAULT" && return
+  $ENGINE rm -f "$VAULT" >/dev/null 2>&1 || true
+  local args=(
+    -d --name "$VAULT" --hostname "$VAULT"
+    --memory 256m --cpus 1 --pids-limit 256
+    -v "$ROOT/config/vault.json:/vault/vault.json:ro"
+    -v "$ROOT/state/logs:/logs"
+    -e "TZ=$(setting TZ)"
+    --add-host host.docker.internal:host-gateway
+    --entrypoint node
+  )
+  if [ "$ENGINE" = podman ]; then
+    args+=(--userns keep-id --network "$NET_INTERNAL" --network "$NET_EXTERNAL")
+    $ENGINE run "${args[@]}" "$IMAGE" /opt/dot/vault/vault.mjs >/dev/null
+  else
+    $ENGINE run "${args[@]}" --network "$NET_EXTERNAL" "$IMAGE" /opt/dot/vault/vault.mjs >/dev/null
+    $ENGINE network connect "$NET_INTERNAL" "$VAULT"
+  fi
+}
+
+case "${1:-}" in
+  build)
+    $ENGINE build -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT"
+    ;;
+  start)
+    if running "$NAME"; then echo "Le dot tourne déjà. ./dot attach pour le rejoindre."; exit 0; fi
+    [ -f "$ROOT/.env" ] || { echo "Il manque .env : copiez .env.example en .env et remplissez-le." >&2; exit 1; }
+    [ -f "$ROOT/config/vault.json" ] || { echo "Il manque config/vault.json : copiez config/vault.example.json et remplissez-le." >&2; exit 1; }
+    check_secrets
+    $ENGINE image inspect "$IMAGE" >/dev/null 2>&1 || $ENGINE build -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT"
+    # Créés ici, à l'utilisateur de la machine : sinon le moteur les crée lui-même, à un autre propriétaire.
+    mkdir -p "$ROOT/config" "$ROOT"/state/{agent,memory,inbox,workspace,browser,logs}
+    network "$NET_INTERNAL" --internal
+    network "$NET_EXTERNAL"
+    start_vault
+
+    $ENGINE rm -f "$NAME" >/dev/null 2>&1 || true
+    memory="$(setting DOT_MEMORY)"; cpus="$(setting DOT_CPUS)"; pids="$(setting DOT_PIDS)"
+    args=(
+      -d --name "$NAME" --hostname "$NAME"
+      --memory "${memory:-8g}" --memory-swap "${memory:-8g}"
+      --cpus "${cpus:-4}"
+      --pids-limit "${pids:-2048}"
+      --network "$NET_INTERNAL"
+      --env-file "$ROOT/.env"
+      -e "DOT_VAULT=$PROXY"
+      -e "HTTP_PROXY=$PROXY" -e "HTTPS_PROXY=$PROXY" -e "http_proxy=$PROXY" -e "https_proxy=$PROXY"
+      -e "NO_PROXY=$VAULT,localhost,127.0.0.1" -e "no_proxy=$VAULT,localhost,127.0.0.1"
+      -e "NODE_USE_ENV_PROXY=1"
+      -v "$ROOT/state:/dot"
+      --shm-size 1g
+    )
+    # Tout ce qui sort passe par le coffre (fetch de Node compris, ainsi que git, pip, npm, apt).
+    # Seul models.json est monté depuis config/ : vault.json, qui contient les secrets, reste au coffre.
+    [ -f "$ROOT/config/models.json" ] && args+=(-v "$ROOT/config/models.json:/opt/dot/config/models.json:ro")
+    # podman sans root : les fichiers de state/ restent à l'utilisateur de la machine.
+    [ "$ENGINE" = podman ] && args+=(--userns keep-id)
+    $ENGINE run "${args[@]}" "$IMAGE" >/dev/null
+    echo "Dot lancé, derrière son coffre. ./dot attach pour voir son terminal."
+    ;;
+  stop)
+    # podman sans root (Ubuntu) peut échouer à couper son processus réseau (pasta) quand le dernier
+    # conteneur part : « rootless netns: kill network process ». Sans conséquence, on l'ignore.
+    quiet() { "$@" 2>&1 | grep -v -e "rootless netns" -e "^\s*\*" -e "^Error: removing container" -e "^$" -e "^$NAME$" -e "^$VAULT$" >&2 || true; }
+    if running "$NAME"; then quiet $ENGINE stop -t 20 "$NAME"; fi
+    if running "$VAULT"; then quiet $ENGINE stop -t 5 "$VAULT"; fi
+    $ENGINE rm -f "$NAME" "$VAULT" >/dev/null 2>&1 || true
+    echo "Dot arrêté. Il reprendra au prochain ./dot start."
+    ;;
+  attach)
+    running "$NAME" || { echo "Le dot ne tourne pas : ./dot start." >&2; exit 1; }
+    $ENGINE exec -it "$NAME" tmux attach -t dot
+    ;;
+  shell)
+    running "$NAME" || { echo "Le dot ne tourne pas : ./dot start." >&2; exit 1; }
+    $ENGINE exec -it "$NAME" bash
+    ;;
+  journal)
+    shift
+    python3 -I "$ROOT/tools/journal.py" "$@"
+    ;;
+  logs)
+    $ENGINE logs "$VAULT" 2>&1 | tail -20 | sed "s/^/[coffre] /"
+    $ENGINE logs -f "$NAME"
+    ;;
+  status)
+    if running "$NAME"; then echo "Le dot tourne ($ENGINE, conteneur $NAME)."; else echo "Le dot ne tourne pas."; fi
+    if running "$VAULT"; then echo "Le coffre tourne."; else echo "Le coffre ne tourne pas."; fi
+    ;;
+  *)
+    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+esac
