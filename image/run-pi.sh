@@ -5,7 +5,7 @@ source /opt/dot/log.sh
 
 while true; do
   started=$(date +%s)
-  pi --continue
+  pi $DOT_PI_EXTENSIONS --continue
   code=$?
   dot_log "pi.exit" "\"code\":$code,\"uptimeS\":$(( $(date +%s) - started ))"
   echo "pi s'est arrêté (code $code), relance dans 3 s"

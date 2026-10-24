@@ -1,7 +1,0 @@
-{
-  "secrets": {
-    "MODEL_KEY": { "value": "ta-cle-du-modele", "hosts": ["host.docker.internal:8080"] },
-    "TELEGRAM_TOKEN": { "value": "123456:jeton-du-bot", "hosts": ["api.telegram.org"] }
-  },
-  "allow": []
-}

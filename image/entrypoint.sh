@@ -23,11 +23,15 @@ if [ -f "$DOT_HOME/memory/loadout.json" ]; then
     writeFileSync('$AGENT/mcp.json', JSON.stringify(applyToMcp(base, readLoadout('$DOT_HOME/memory')), null, 2));
   " || echo "loadout.json ignoré (illisible)"
 fi
+# Les extensions du dépôt sont chargées par pi en options (-e), sans être copiées : le dossier
+# extensions/ du dot (monté depuis son dossier sur la machine) ne contient que les siennes.
+DOT_PI_EXTENSIONS=""
 for ext in /opt/dot/extensions/*/ /opt/dot-vendor/extensions/*/; do
   name="$(basename "$ext")"
-  rm -rf "$AGENT/extensions/$name"
-  cp -r "$ext" "$AGENT/extensions/$name"
+  rm -rf "$AGENT/extensions/$name"   # copie laissée par une version précédente
+  DOT_PI_EXTENSIONS="$DOT_PI_EXTENSIONS -e ${ext%/}"
 done
+export DOT_PI_EXTENSIONS
 
 # Fichiers de mémoire : créés une fois, ensuite ils appartiennent au dot.
 for file in MEMORY.md JOURNAL.md; do

@@ -234,7 +234,8 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
     // Le tableau de bord du run, pour ./dot suivre et /suivre.
     const live: any = { status: "running", label: info.label, kind: info.kind, started: new Date(started).toISOString(), turns: 0, tokens: 0, steps: [] };
     writeLive(LIVE_FILE, live);
-    const child = spawn("pi", ["-p", "--mode", "json", "--session-id", info.session, "--", prompt], {
+    const extensions = (process.env.DOT_PI_EXTENSIONS ?? "").trim().split(/\s+/).filter(Boolean);
+    const child = spawn("pi", [...extensions, "-p", "--mode", "json", "--session-id", info.session, "--", prompt], {
       cwd: WORKSPACE,
       env: { ...process.env, DOT_ROLE: "worker" },
       stdio: ["ignore", "pipe", "pipe"],

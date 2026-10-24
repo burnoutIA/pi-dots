@@ -1,0 +1,6 @@
+{
+  // Un fichier .dot (./dot export) est un JSON lisible.
+  "files.associations": {
+    "*.dot": "json"
+  }
+}

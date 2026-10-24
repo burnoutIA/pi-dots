@@ -9,7 +9,9 @@ import { join } from "node:path";
 
 const src = process.env.DOT_SRC ?? "/src";
 const dir = mkdtempSync(join(tmpdir(), "dot-vault-"));
-const CONFIG = join(dir, "vault.json");
+const CONFIG = join(dir, "test.dot"); // un vrai fichier de dot : en-tête, puis env et vault
+const { readVault } = await import(`${src}/dotfile.mjs`);
+const secretsNow = () => readVault(CONFIG).secrets;
 const INBOX = join(dir, "inbox");
 const OWNER = 42;
 
@@ -50,7 +52,7 @@ before(async () => {
   vaultPort = 20000 + Math.floor(Math.random() * 20000);
   writeFileSync(
     CONFIG,
-    JSON.stringify({
+    "---\nname: test\ndescription: dot de test\n---\n# un commentaire qui doit survivre\nenv:\n  TZ: Europe/Paris\nvault: " + JSON.stringify({
       secrets: {
         KEY: { value: "s3cret-key", hosts: [`127.0.0.1:${servicePort}`] },
         USER: { value: "moi", hosts: [`127.0.0.1:${servicePort}`], readOnly: true },
@@ -154,7 +156,7 @@ test("demande de secret : la réponse est interceptée, enregistrée, effacée, 
   await new Promise((r) => setTimeout(r, 200));
 
   assert.deepEqual(deleted.slice(-2), [101, 102], "les messages sont effacés du fil");
-  const saved = JSON.parse(readFileSync(CONFIG, "utf8")).secrets;
+  const saved = secretsNow();
   assert.equal(saved.NEW_USER.value, "alice");
   assert.equal(saved.NEW_PASS.value, "p4ss");
   assert.deepEqual(saved.NEW_PASS.hosts, ["api.example.com"]);
@@ -175,7 +177,7 @@ test("/annuler annule la demande sans rien enregistrer", async () => {
   updates = [fromOwner(4, "/annuler")];
   assert.equal((await poll()).result[0].message, undefined);
   await new Promise((r) => setTimeout(r, 200));
-  assert.equal(JSON.parse(readFileSync(CONFIG, "utf8")).secrets.CANCELLED, undefined);
+  assert.equal(secretsNow().CANCELLED, undefined);
   assert.match(sent.at(-1), /annulée/);
 });
 
@@ -189,7 +191,7 @@ test("élargir un secret : oui ajoute le serveur, et rien ne fuit vers le dot", 
   updates = [fromOwner(6, "oui")];
   await poll();
   await new Promise((r) => setTimeout(r, 200));
-  assert.deepEqual(JSON.parse(readFileSync(CONFIG, "utf8")).secrets.KEY.hosts, [`127.0.0.1:${servicePort}`, "api.example.com"]);
+  assert.deepEqual(secretsNow().KEY.hosts, [`127.0.0.1:${servicePort}`, "api.example.com"]);
   assert.match(sent.at(-1), /élargi/);
 });
 
@@ -199,7 +201,7 @@ test("élargir un secret inconnu est refusé ; non n'ajoute rien", async () => {
   updates = [fromOwner(7, "non")];
   await poll();
   await new Promise((r) => setTimeout(r, 200));
-  assert.ok(!JSON.parse(readFileSync(CONFIG, "utf8")).secrets.USER.hosts.includes("b.example.com"));
+  assert.ok(!secretsNow().USER.hosts.includes("b.example.com"));
 });
 
 test("pendant une demande, les commandes du bot passent au dot", async () => {
@@ -216,7 +218,7 @@ test("une demande en cours survit à un redémarrage du coffre", async () => {
   updates = [fromOwner(10, "valeur-a")];
   await poll();
   await new Promise((r) => setTimeout(r, 200));
-  assert.equal(JSON.parse(readFileSync(CONFIG, "utf8"))._pending.index, 1);
+  assert.equal(readVault(CONFIG)._pending.index, 1);
   // Redémarrage : nouveau coffre sur le même fichier.
   vault.kill();
   await new Promise((r) => setTimeout(r, 300));
@@ -237,10 +239,12 @@ test("une demande en cours survit à un redémarrage du coffre", async () => {
   updates = [fromOwner(11, "valeur-b")];
   await poll();
   await new Promise((r) => setTimeout(r, 200));
-  const saved = JSON.parse(readFileSync(CONFIG, "utf8"));
+  const saved = readVault(CONFIG);
   assert.equal(saved.secrets.PERSIST_A.value, "valeur-a");
   assert.equal(saved.secrets.PERSIST_B.value, "valeur-b");
   assert.equal(saved._pending, undefined);
+  assert.match(readFileSync(CONFIG, "utf8"), /# un commentaire qui doit survivre/, "le coffre garde les commentaires du fichier");
+  assert.match(readFileSync(CONFIG, "utf8"), /^---\nname: test/, "et son en-tête");
 });
 
 test("depuis la machine : la demande se lit sans valeur, la réponse va directement au coffre", async () => {
@@ -257,7 +261,7 @@ test("depuis la machine : la demande se lit sans valeur, la réponse va directem
   const done = await admin("/answer", { method: "POST", body: JSON.stringify({ id: first.id, text: "val-b" }) });
   assert.match(done.message, /Enregistré/);
   assert.equal(done.pending, null);
-  const saved = JSON.parse(readFileSync(CONFIG, "utf8")).secrets;
+  const saved = secretsNow();
   assert.equal(saved.LOCAL_A.value, "val-a");
   assert.equal(saved.LOCAL_B.value, "val-b");
 });

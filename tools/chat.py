@@ -26,6 +26,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 STATE = Path(os.environ.get("DOT_STATE") or ROOT / "state")
 NAME = os.environ.get("DOT_NAME", "dot")
+CONTAINER = os.environ.get("DOT_CONTAINER", NAME)
+DIR = os.environ.get("DOT_DIR", str(ROOT))
 CLI = os.environ.get("DOT_CLI") or str(ROOT / "dot")
 CHANNEL = STATE / "channel"
 IN, OUT = CHANNEL / "in", CHANNEL / "out"
@@ -142,13 +144,13 @@ def wait_reply(msg_id: str, timeout: int = 1800, interactive_secrets: bool = Tru
 
 
 def running() -> bool:
-    out = subprocess.run([ENGINE, "inspect", "-f", "{{.State.Running}}", NAME], capture_output=True, text=True)
+    out = subprocess.run([ENGINE, "inspect", "-f", "{{.State.Running}}", CONTAINER], capture_output=True, text=True)
     return out.stdout.strip() == "true"
 
 
 def power(action: str):
     """./dot start ou ./dot stop, depuis le chat."""
-    subprocess.run([CLI, f"@{NAME}", action])
+    subprocess.run([CLI, DIR, action])
 
 
 def ensure_running(ask: bool = True):

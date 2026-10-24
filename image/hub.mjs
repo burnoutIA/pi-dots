@@ -17,7 +17,9 @@ import { dirname, join } from "node:path";
 
 const HOME = process.env.DOT_HOME ?? "/dot";
 const SOCKET = process.env.HUB_SOCKET ?? join(HOME, "channel", "rpc.sock");
-const PI_CMD = JSON.parse(process.env.HUB_PI_CMD ?? '["pi","--mode","rpc","--continue"]');
+// Les extensions du dépôt arrivent en options (-e …), préparées par le démarrage du dot.
+const EXTENSIONS = (process.env.DOT_PI_EXTENSIONS ?? "").trim().split(/\s+/).filter(Boolean);
+const PI_CMD = process.env.HUB_PI_CMD ? JSON.parse(process.env.HUB_PI_CMD) : ["pi", ...EXTENSIONS, "--mode", "rpc", "--continue"];
 const CWD = process.env.HUB_CWD ?? join(HOME, "workspace");
 const LOGS = join(HOME, "logs");
 const DIALOGS = new Set(["select", "confirm", "input", "editor"]);

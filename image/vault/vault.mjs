@@ -26,9 +26,10 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import { join } from "node:path";
+import { readVault, writeVault } from "../dotfile.mjs";
 import { readMail } from "./imap.mjs";
 
-const CONFIG_FILE = process.env.VAULT_CONFIG ?? "/vault/vault.json";
+const CONFIG_FILE = process.env.VAULT_CONFIG ?? "/vault/dot.dot";
 const LOGS = process.env.VAULT_LOGS ?? "/logs";
 const INBOX = process.env.VAULT_INBOX ?? "/inbox";
 const PORT = Number(process.env.VAULT_PORT ?? 8080);
@@ -59,8 +60,9 @@ function log(type, data = {}) {
 
 let vault = { secrets: {}, allow: [] };
 
+// Les secrets vivent dans le nœud `vault` du fichier du dot (<nom>.dot) ; le coffre est le seul à le lire.
 function load() {
-  const raw = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
+  const raw = readVault(CONFIG_FILE);
   vault = { secrets: raw.secrets ?? {}, allow: raw.allow ?? [] };
   pending = raw._pending ?? null;
   for (const [name, secret] of Object.entries(vault.secrets)) {
@@ -70,8 +72,8 @@ function load() {
   }
 }
 function save() {
-  // Écrit en place : le fichier est monté depuis la machine hôte (pas de renommage possible).
-  writeFileSync(CONFIG_FILE, JSON.stringify(pending ? { ...vault, _pending: pending } : vault, null, 2) + "\n");
+  // Secret par secret : le reste du fichier (en-tête, env, model, commentaires) ne bouge pas.
+  writeVault(CONFIG_FILE, { ...vault, _pending: pending ?? undefined });
 }
 
 // Motifs de serveur : « api.example.com », « host:8080 », « *.example.com ».

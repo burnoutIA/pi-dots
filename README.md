@@ -4,61 +4,93 @@ Un dot est un agent [pi](https://www.npmjs.com/package/@earendil-works/pi-coding
 
 Il tourne quand on l'allume. Quand on l'éteint, il reprend là où il en était au démarrage suivant. Le périmètre du projet est dans [PERIMETRE.md](PERIMETRE.md).
 
+## Un dot, c'est un dossier
+
+Un dot vit dans un dossier, où que ce soit sur le disque :
+
+```text
+travail/
+  travail.dot     son fichier : en-tête, réglages (env), providers (model), secrets (vault)
+  skills/         ses savoir-faire
+  extensions/     ses extensions pi
+  state/          sa vie : mémoire, plan, sessions, journal, fichiers, livrables
+```
+
+- **Copier tout le dossier**, c'est obtenir le même dot.
+- **Le copier sans `state/`**, c'est obtenir un dot vierge : mêmes accès et savoir-faire, sans son passé (`./dot copie travail perso --vierge`, qui retire aussi Telegram puisqu'un bot n'a qu'un lecteur).
+- Les conteneurs ne sont qu'une **instance jetable** : ils sont recréés à chaque démarrage à partir de l'image, et montent le dossier. Rien de ce qui compte ne vit dedans. Deux copies d'un même dot, posées à deux endroits, ont chacune leurs conteneurs.
+
+### Le fichier `.dot`
+
+```yaml
+---
+name: travail
+description: Mon assistant de travail. Brief du matin, suivi de mes projets.
+onclic: chat          # double-clic : le dot est lancé, puis chat (la conversation) ou none
+---
+# Réglages : le dot les reçoit comme variables d'environnement. Aucun secret ici.
+env:
+  DOT_PROVIDER: local
+  DOT_MODEL: mon-modele
+  DOT_INTERFACE: rpc
+  TELEGRAM_OWNER_ID: "123456"
+  TZ: Europe/Paris
+
+# Les providers de pi : baseUrl passe par le coffre, apiKey est un {{NOM}} du vault.
+model:
+  providers:
+    local: { baseUrl: "http://dot-vault:8080/http/host.docker.internal:8080/v1", api: openai-completions, apiKey: "{{MODEL_KEY}}", models: [ … ] }
+
+# Les secrets : lus et mis à jour par le coffre seul.
+vault:
+  secrets:
+    MODEL_KEY: { value: "sk-…", hosts: [host.docker.internal:8080] }
+  allow: []
+```
+
+- **Le dot ne voit jamais ce fichier.** Au démarrage, l'application en extrait seulement `env` et `model` pour lui. Seul le coffre lit le nœud `vault`, et il y ajoute les secrets que tu lui donnes **en gardant tes commentaires**.
+- **Garde-fou** : `./dot start` refuse un réglage de `env` qui ressemble à un secret (`…_API_KEY`, `…TOKEN`…), ainsi qu'une clé en clair dans `model`.
+- **Le fichier contient tes secrets en clair** : il est créé lisible par toi seul. Garde-le comme un trousseau de clés.
+
+**Ouvrir un `.dot` d'un double-clic** : `./dot associer` (Linux) associe les fichiers `.dot` à l'application. Un double-clic **lance toujours le dot**, puis fait ce que dit `onclic` : `chat` ouvre la conversation dans un terminal, `none` ne fait rien de plus (une autre application, par exemple, prend la main).
+
 ## Démarrer
 
 ```bash
-cp .env.example .env                              # provider, modèle, rythme : rien de secret
-cp config/vault.example.json config/vault.json    # les premiers secrets : clé du modèle, jeton Telegram
-cp config/models.example.json config/models.json  # si ton provider n'est pas connu de pi
-./dot build                                       # construit l'image (une fois, puis à chaque mise à jour)
-./dot start                                       # lance le coffre, puis le dot
-./dot chat                                        # lui parler
+./dot build                    # construit l'image (une fois, puis à chaque mise à jour du code)
+./dot create travail           # crée dots/travail/ avec un travail.dot à remplir
+                               #   (--dans ~/ailleurs : ailleurs ; --depuis autre : copie vierge d'un autre dot)
+./dot @travail start           # lance son coffre, puis le dot
+./dot @travail chat            # lui parler
 ```
 
 Il faut docker ou podman. Le script prend celui qui est installé ; on peut forcer avec `DOT_ENGINE=docker`.
 
-## Plusieurs dots
+## Viser un dot
 
-Un dépôt peut faire vivre plusieurs dots, chacun avec ses conteneurs, son réseau, son coffre, son état et son socket :
-
-```bash
-./dot create travail          # dots/travail/ : reprend la configuration du dot par défaut (modèle), sans Telegram
-./dot create perso --from travail
-./dot list                    # lesquels existent, lesquels tournent (--json pour un programme)
-./dot @travail start          # @nom en premier argument vise un dot précis
-./dot use travail             # ou change le dot par défaut
-./dot remove travail --yes    # efface son état, sa mémoire et ses secrets
-```
-
-Le dot `dot` garde ses fichiers à la racine du dépôt (`.env`, `config/`, `state/`) ; les autres vivent dans `dots/<nom>/` (hors git). Un nouveau dot ne reçoit du coffre d'origine que les secrets dont son modèle a besoin. Un bot Telegram n'ayant qu'un lecteur, chaque dot qui veut Telegram a son propre bot.
-
-### Un dot dans un seul fichier
-
-Un fichier `.dot` est un **modèle de dot** : sa configuration et ses savoir-faire, sans son passé.
+Toutes les commandes d'un dot acceptent, en premier argument :
+- `@nom` : un dot déjà connu de l'application (elle tient la liste de ceux qu'elle a vus, dans `~/.local/share/dots/`) ;
+- un **chemin** : son dossier ou son fichier `.dot` (`./dot ~/ailleurs/travail/travail.dot start`) ;
+- rien : le dot choisi avec `./dot use`, ou le seul connu.
 
 ```bash
-./dot @travail export               # → dots/travail.dot
-./dot import dots/travail.dot neuf  # crée le dot « neuf » à partir du modèle
-./dot @neuf start
+./dot list                     # les dots connus, et lesquels tournent (--json pour un programme)
+./dot use travail              # le dot par défaut
+./dot copie travail perso [--vierge]
+./dot remove travail --yes     # efface son dossier entier
 ```
 
-| Dans le fichier | Repart à neuf |
-|---|---|
-| `.env`, `config/models.json`, `config/vault.json` (**secrets compris**) | sessions, mémoire, plan, journal |
-| ses skills et ses propres extensions | fichiers de travail, livrables, navigateur |
-
-C'est un **fichier JSON lisible** : la config (le `.env` ligne par ligne), les secrets, et chaque skill fichier par fichier. On peut l'ouvrir et le corriger dans un éditeur avant de l'importer.
-
-À l'import, le dot est créé sans Telegram (un bot n'a qu'un lecteur), et un nom déjà pris est refusé. Le fichier contient les secrets en clair : garde-le comme un trousseau de clés (il est créé lisible par toi seul, et `dots/` est hors git).
-
-Toutes les commandes ci-dessous s'appliquent au dot visé (`./dot @nom …`).
+`DOTS_HOME` change l'endroit où `./dot create` range les nouveaux dots (par défaut `dots/`, hors git).
 
 ## Les commandes
 
 | Commande | Rôle |
 |---|---|
-| `./dot build` | construire l'image |
-| `./dot start` / `./dot stop` | allumer / éteindre le dot et son coffre (l'état reste dans `state/`) |
+| `./dot build` | construire l'image (commune à tous les dots) |
+| `./dot create`, `copie`, `list`, `use`, `remove` | gérer ses dots |
+| `./dot associer` | ouvrir les fichiers `.dot` d'un double-clic (Linux) |
+| `./dot start` / `./dot stop` | allumer / éteindre le dot et son coffre |
+| `./dot open` | ce que fait le double-clic : lancer le dot, puis `onclic` |
 | `./dot chat` | parler au dot depuis ta machine |
 | `./dot ask "…"` | une question, la réponse s'affiche |
 | `./dot send fichier "…"` | lui déposer un fichier |
@@ -68,26 +100,21 @@ Toutes les commandes ci-dessous s'appliquent au dot visé (`./dot @nom …`).
 | `./dot suivre` | le run de travail en cours, en direct |
 | `./dot attach` | son terminal pi en direct (`Ctrl-b d` pour en sortir sans l'arrêter ; interface `tui`) |
 | `./dot rpc` | connecteur RPC (interface `rpc`) |
-| `./dot create`, `list`, `use`, `remove` | gérer plusieurs dots |
-| `./dot export`, `./dot import` | un dot dans un seul fichier (modèle) |
 | `./dot shell` | un shell dans son environnement |
 | `./dot journal` | ce qu'il a fait (`-p` problèmes, `-f` en direct, `--runs`, `--reseau`, ou une date) |
 | `./dot doctor` | diagnostic complet |
-| `./dot test` | tests automatiques |
 | `./dot status [--json]` / `./dot logs` | en marche ou non / sortie brute des conteneurs |
+| `./dot test` | tests automatiques |
 
-## Configuration (jamais versionnée)
+## Les réglages (`env` du fichier `.dot`)
 
-| Fichier | Lu par | Contenu |
-|---|---|---|
-| `.env` | le dot | provider et modèle (`DOT_PROVIDER`, `DOT_MODEL`), `TELEGRAM_OWNER_ID`, rythme, ressources. **Aucun secret** : `./dot start` refuse de démarrer s'il en voit un |
-| `config/vault.json` | le coffre seul | la liste des secrets : nom → valeur, avec les serveurs où chacun a le droit d'aller |
-| `config/models.json` | le dot | facultatif : les providers à déclarer à pi, avec `baseUrl` passant par le coffre et `apiKey: "{{MODEL_KEY}}"` |
-
-Les réglages de `.env` (valeurs par défaut entre parenthèses) :
+Valeurs par défaut entre parenthèses :
 
 | Variable | Rôle |
 |---|---|
+| `DOT_PROVIDER`, `DOT_MODEL`, `DOT_THINKING` | le modèle (un provider connu de pi, ou déclaré dans `model`) |
+| `DOT_INTERFACE` | `tui` ou `rpc` (voir plus bas) |
+| `TELEGRAM_OWNER_ID` | ton identifiant Telegram ; vide : pas de Telegram |
 | `DOT_MEMORY`, `DOT_CPUS`, `DOT_PIDS` | plafonds du conteneur (8g, 4, 2048) |
 | `DOT_RECHECK_MINUTES` | un objectif dont le plan n'a rien changé n'est réexaminé qu'après ce délai (60) |
 | `DOT_RUN_MINUTES` | durée maximale d'un run de travail (30) |
@@ -99,9 +126,9 @@ Les réglages de `.env` (valeurs par défaut entre parenthèses) :
 
 ## Interface : terminal ou RPC
 
-`DOT_INTERFACE` dans `.env` :
+`DOT_INTERFACE` :
 - `tui` (par défaut) : le pi de conversation tourne dans un terminal, qu'on rejoint avec `./dot attach` ;
-- `rpc` : il tourne en mode RPC derrière un relais, joignable par un socket (`state/channel/rpc.sock`). Le protocole est **celui de `pi --mode rpc`**, inchangé : un programme qui sait piloter pi en RPC pilote un dot en lançant `./dot rpc` à la place de `pi --mode rpc` (les options passées sont ignorées : la configuration appartient au dot). Plusieurs clients peuvent se connecter en même temps ; chacun reçoit ses réponses et tous reçoivent les événements. Une demande à l'interface (confirmation, choix) va à tous, la première réponse l'emporte ; sans client connecté, elle est annulée pour que le dot ne reste jamais bloqué.
+- `rpc` : il tourne en mode RPC derrière un relais, joignable par un socket (`state/channel/rpc.sock`). Le protocole est **celui de `pi --mode rpc`**, inchangé : un programme qui sait piloter pi en RPC pilote un dot en lançant `./dot @nom rpc` à la place de `pi --mode rpc` (les options passées sont ignorées : la configuration appartient au dot). Plusieurs clients peuvent se connecter en même temps ; chacun reçoit ses réponses et tous reçoivent les événements. Une demande à l'interface (confirmation, choix) va à tous, la première réponse l'emporte ; sans client connecté, elle est annulée pour que le dot ne reste jamais bloqué.
 
 Dans les deux cas, Telegram, `./dot chat` et le reste fonctionnent.
 
@@ -159,18 +186,16 @@ Le dot n'a **aucun accès direct au réseau**. Il vit sur un réseau interne où
 - **Réseau local et machine hôte** : refusés, sauf les adresses listées dans `allow` et les serveurs nommés par un secret.
 - **Secrets** : le dot ne connaît que leurs noms. Il écrit `{{NOM}}` dans ses requêtes, envoyées par `http://dot-vault:8080/https/<serveur>/…`, et le coffre met la vraie valeur au passage.
 
-### Les secrets : une liste nom → valeur
+### Les secrets : une liste nom → valeur (le nœud `vault` du fichier `.dot`)
 
-```json
-{
-  "secrets": {
-    "MODEL_KEY":        { "value": "sk-…",       "hosts": ["host.docker.internal:8080"] },
-    "TELEGRAM_TOKEN":   { "value": "123456:…",   "hosts": ["api.telegram.org"] },
-    "SERVICE_USER":     { "value": "moi@…",      "hosts": ["*.example.com"], "readOnly": true },
-    "SERVICE_PASSWORD": { "value": "…",          "hosts": ["*.example.com"], "readOnly": true }
-  },
-  "allow": []
-}
+```yaml
+vault:
+  secrets:
+    MODEL_KEY:        { value: "sk-…",     hosts: [host.docker.internal:8080] }
+    TELEGRAM_TOKEN:   { value: "123456:…", hosts: [api.telegram.org] }
+    SERVICE_USER:     { value: "moi@…",    hosts: ["*.example.com"], readOnly: true }
+    SERVICE_PASSWORD: { value: "…",        hosts: ["*.example.com"], readOnly: true }
+  allow: []
 ```
 
 | Champ | Rôle |
@@ -185,7 +210,7 @@ Les mails (IMAP) ne sont pas du web : le coffre les lit lui-même, en lecture se
 
 ### Ajouter un secret : c'est le dot qui le demande
 
-Tu n'as pas à éditer `vault.json`. Quand il manque un secret au dot pour faire ce que tu lui demandes, il le demande au coffre (outil `secret`) :
+Tu n'as pas à éditer le nœud `vault` toi-même. Quand il manque un secret au dot pour faire ce que tu lui demandes, il le demande au coffre (outil `secret`) :
 
 1. Le coffre, et non l'IA, te pose la question, **sur Telegram et sur ta machine** : à quoi servira le secret, vers quels serveurs il pourra partir, en lecture seule ou non.
 2. Tu réponds :
@@ -199,7 +224,7 @@ Pour qu'un secret existant serve aussi vers un autre serveur, le dot demande un 
 Une demande à la fois ; elle survit à un redémarrage du coffre et expire au bout de 30 minutes. Pendant une demande, les commandes du bot passent normalement au dot.
 
 **Limites** :
-- un service qui exige une autorisation dans un navigateur (OAuth) ne se configure pas ainsi : son secret s'ajoute à la main dans `vault.json` ;
+- un service qui exige une autorisation dans un navigateur (OAuth) ne se configure pas ainsi : son secret s'ajoute à la main dans le nœud `vault` du fichier `.dot` ;
 - le jeton Telegram (c'est le canal lui-même) se change à la main ;
 - ce que le coffre ne protège pas : ce que le dot voit ou fait avec ses accès. Donne-lui des comptes et des droits à sa mesure (lecture seule quand c'est possible, son propre compte git…).
 
@@ -281,10 +306,10 @@ Le dot a le même diagnostic (outil `doctor`, sur une période réglable) pour s
 
 Pas encore testés automatiquement : la lecture IMAP, les runs et le battement eux-mêmes.
 
-## État du dot (`state/`, hors git)
+## La vie du dot (`state/`)
 
 ```text
-state/agent/       configuration de pi, sessions, skills et extensions du dot
+state/agent/       configuration de pi et sessions (ses skills et extensions sont à côté de state/)
 state/memory/      MEMORY.md, JOURNAL.md, plan.json et PLAN.md, tâches, veilles, usage, état
 state/workspace/   son dossier de travail (files/ : les fichiers que tu lui as déposés)
 state/livrables/   ce qu'il a produit pour toi
@@ -294,14 +319,15 @@ state/logs/        le journal
 state/browser/     profil du navigateur
 ```
 
-Supprimer `state/` remet le dot à zéro.
+Supprimer `state/` remet le dot à zéro, en gardant ses accès, ses skills et ses extensions.
 
 ## Structure du dépôt
 
 ```text
 Containerfile                   l'image : OS, outils, pi, navigateur, ketch, ctx-optimizer
 dot                             toutes les commandes
-image/entrypoint.sh             démarrage : config de pi depuis .env, pi dans tmux
+image/entrypoint.sh             démarrage : config de pi depuis env, pi dans tmux ou derrière le relais RPC
+image/dotfile.mjs               le fichier .dot : lecture, extraction de env et model, mise à jour du vault
 image/defaults/                 consignes du dot, serveurs MCP, modèles de mémoire
 image/extensions/dot/           autonomie : plan, battement, runs, schedule, watch, mémoire, budget, doctor, secret
 image/extensions/dot-telegram/  canal Telegram (via le coffre)
@@ -314,7 +340,6 @@ tools/suivre.py                 le run en cours, en direct
 tools/journal.py                lecture du journal
 image/hub.mjs                   le relais RPC (interface rpc)
 tools/rpc.py                    le connecteur RPC, côté machine
-tools/dotfile.py                export / import d'un dot en un seul fichier
 integrations/pi-skill-dots/     skill d'exemple : faire gérer des dots par un autre agent pi
 tests/                          tests automatiques
 ```

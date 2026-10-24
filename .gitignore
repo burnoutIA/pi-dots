@@ -12,6 +12,5 @@ __pycache__/
 # Notes de travail personnelles
 roadmap.md
 
-# Les autres dots (./dot create) et le dot par défaut
+# Les dots (créés par ./dot create) : leurs fichiers contiennent leurs secrets
 dots/
-.dot-courant

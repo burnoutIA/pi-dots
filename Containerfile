@@ -6,6 +6,7 @@ FROM node:24-bookworm-slim
 ARG PI_VERSION=1.3.0
 ARG KETCH_VERSION=0.19.0
 ARG PLAYWRIGHT_MCP_VERSION=0.0.83
+ARG YAML_VERSION=2.9.0
 
 # --- OS et outils de base -----------------------------------------------------
 # sudo sans mot de passe : dans son environnement, le dot est chez lui (il installe ce qu'il veut).
@@ -35,6 +36,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 RUN npm install -g --ignore-scripts \
       "@earendil-works/pi-coding-agent@${PI_VERSION}" \
       "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" \
+      "yaml@${YAML_VERSION}" \
  && cd "$(npm root -g)/@playwright/mcp" \
  && npx playwright install --with-deps chromium \
  && chmod -R a+rX /opt/ms-playwright \

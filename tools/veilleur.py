@@ -20,9 +20,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DIR = Path(os.environ.get("DOT_DIR") or ROOT)  # le dossier du dot (.env, config/)
+DIR = Path(os.environ.get("DOT_DIR") or ROOT)  # le dossier du dot
 STATE_DIR = Path(os.environ.get("DOT_STATE") or DIR / "state")
 NAME = os.environ.get("DOT_NAME", "dot")
+CONTAINER = os.environ.get("DOT_CONTAINER", NAME)
 CLI = os.environ.get("DOT_CLI") or str(ROOT / "dot")
 CHANNEL = STATE_DIR / "channel"
 POWER = CHANNEL / "power.json"
@@ -38,21 +39,21 @@ def log(kind: str, **data):
         f.write(json.dumps(line, ensure_ascii=False) + "\n")
 
 
-def setting(name: str) -> str:
-    try:
-        for line in (DIR / ".env").read_text().splitlines():
-            if line.startswith(f"{name}="):
-                return line.split("=", 1)[1].strip().strip("\"'")
-    except FileNotFoundError:
-        pass
-    return ""
+_config = None
+
+
+def telegram_config():
+    """(identifiant de la personne, jeton du bot), lus une fois dans le fichier du dot (./dot telegram-config)."""
+    global _config
+    if _config is None:
+        out = subprocess.run([CLI, str(DIR), "telegram-config"], capture_output=True, text=True)
+        lines = (out.stdout.splitlines() + ["", ""])[:2]
+        _config = (lines[0].strip(), lines[1].strip())
+    return _config
 
 
 def token() -> str:
-    try:
-        return json.loads((DIR / "config" / "vault.json").read_text())["secrets"]["TELEGRAM_TOKEN"]["value"]
-    except Exception:
-        return ""
+    return telegram_config()[1]
 
 
 def telegram(method: str, params: dict, timeout: int = 30):
@@ -66,7 +67,7 @@ STATE = STATE_DIR / "memory" / "state.json"
 
 
 def engine_says_running() -> bool:
-    out = subprocess.run([ENGINE, "inspect", "-f", "{{.State.Running}}", NAME], capture_output=True, text=True)
+    out = subprocess.run([ENGINE, "inspect", "-f", "{{.State.Running}}", CONTAINER], capture_output=True, text=True)
     return out.stdout.strip() == "true"
 
 
@@ -83,13 +84,13 @@ def running() -> bool:
 
 
 def dot(action: str):
-    subprocess.run([CLI, f"@{NAME}", action], capture_output=True)
+    subprocess.run([CLI, str(DIR), action], capture_output=True)
 
 
 def main():
-    owner = int(setting("TELEGRAM_OWNER_ID") or 0)
+    owner = int(telegram_config()[0] or 0)
     if not token() or not owner:
-        sys.exit("Veilleur : Telegram n'est pas configuré (TELEGRAM_TOKEN dans config/vault.json, TELEGRAM_OWNER_ID dans .env).")
+        sys.exit("Veilleur : Telegram n'est pas configuré dans le fichier du dot (env: TELEGRAM_OWNER_ID, vault: TELEGRAM_TOKEN).")
     log("watcher.start")
     offset = 0
     while True:
