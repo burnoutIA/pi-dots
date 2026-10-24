@@ -47,7 +47,7 @@ L'utilisateur ne fournit que ses variables.
 
 ## Ce qui n'est pas le projet
 
-Les usages d'une personne (un brief du matin, un skill agenda ou mail, tel service connecté…) ne font pas partie du dépôt : ce sont des demandes faites au dot, qu'il réalise lui-même. Ils vivent dans son état (`state/`) et dans le coffre de la personne (`config/`), jamais dans le code.
+Les usages d'une personne (un brief du matin, un skill agenda ou mail, tel service connecté…) ne font pas partie du dépôt : ce sont des demandes faites au dot, qu'il réalise lui-même. Ils vivent dans le dossier du dot (ses skills, son état, le coffre de son fichier `.dot`), jamais dans le code.
 
 ## À traiter plus tard
 

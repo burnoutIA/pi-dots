@@ -1,6 +1,6 @@
 // dot-vault — la seule porte de sortie du dot, et le seul endroit où vivent ses secrets.
 //
-// Les secrets sont une liste nom → valeur (config/vault.json), chacun avec les serveurs où il a le
+// Les secrets sont une liste nom → valeur (le nœud vault du fichier .dot), chacun avec les serveurs où il a le
 // droit d'aller. Le dot ne connaît que les noms. Il écrit {{NOM}} là où il faut le secret, et
 // envoie sa requête par le coffre, qui remplace au passage :
 //

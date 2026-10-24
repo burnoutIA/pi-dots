@@ -54,6 +54,29 @@ vault:
 
 **Ouvrir un `.dot` d'un double-clic** : `./dot associer` (Linux), à faire une fois à l'installation, associe les fichiers `.dot` à l'application. Un double-clic **lance toujours le dot**, puis fait ce que dit `onclic` : `chat` ouvre la conversation dans un terminal, `none` ne fait rien de plus (une autre application, par exemple, prend la main).
 
+## Comment un dot tourne
+
+```text
+ ta machine
+ ├─ ./dot              l'application : toutes les commandes, la liste des dots connus
+ ├─ veilleur           un seul pour tous les dots : les allumer depuis Telegram
+ └─ travail/           le dossier du dot
+      travail.dot ─────────────┬─ env, model ──►  conteneur du dot      pi, extensions, battement, runs
+      skills/ extensions/ state/ ───────────────►   │                  (monte le dossier, jamais le .dot)
+                               │                    │ réseau interne : il ne voit que le coffre
+                               └─ vault ────────►  conteneur du coffre  proxy, secrets, demandes
+                                                    │ réseau externe
+                                                    ▼
+                                          internet, modèle, Telegram (adresses privées refusées)
+```
+
+- **Deux conteneurs par dot**, tirés de la même image : le **dot** (pi, ses extensions, ses outils) et son **coffre**. Ils sont nommés d'après le dot et son dossier (`dot-<nom>-<empreinte>`), si bien que deux copies d'un même dot ne se gênent pas.
+- **Un réseau interne par dot**, sans sortie : le dot n'y voit que son coffre, joignable sous le nom `dot-vault`. Le coffre est aussi sur le réseau externe, commun à tous les coffres : c'est la seule porte vers le dehors.
+- **Au démarrage**, l'application lit le fichier `.dot`, en extrait `env` et `model` (dans `state/.run/`, refusés s'ils contiennent un secret), lance le coffre avec le fichier `.dot` (pour son nœud `vault`), puis le dot avec son dossier. Les conteneurs sont recréés à chaque démarrage : seul le dossier compte.
+- **Dans le dot**, pi tourne en continu pour la conversation (dans un terminal ou derrière le relais RPC). L'extension `dot` y ajoute un battement qui lance, au besoin, des runs de travail : d'autres pi, lancés à part, un par objectif (voir « Comment le dot travaille »).
+- **Hors des dots**, sur ta machine : le script `dot` (toutes les commandes, la liste des dots connus dans `~/.local/share/dots/`) et le **veilleur**, un seul pour tous les dots, qui permet de les allumer depuis Telegram quand ils sont éteints.
+- **Entre la machine et le dot**, tout passe par le dossier : `state/channel/` pour le chat local et le socket RPC, `state/inbox/` pour les fichiers déposés, `state/livrables/` pour ce qu'il produit.
+
 ## Démarrer
 
 ```bash
@@ -225,7 +248,7 @@ Une demande à la fois ; elle survit à un redémarrage du coffre et expire au b
 
 **Limites** :
 - un service qui exige une autorisation dans un navigateur (OAuth) ne se configure pas ainsi : son secret s'ajoute à la main dans le nœud `vault` du fichier `.dot` ;
-- le jeton Telegram (c'est le canal lui-même) se change à la main ;
+- le jeton Telegram (c'est le canal lui-même) se change à la main, dans le nœud `vault` ;
 - ce que le coffre ne protège pas : ce que le dot voit ou fait avec ses accès. Donne-lui des comptes et des droits à sa mesure (lecture seule quand c'est possible, son propre compte git…).
 
 ## Ce qu'il y a dans l'environnement
@@ -265,8 +288,8 @@ Toutes les 15 s, un battement lit le plan **sans passer par le modèle**. Il ne 
 ## Comment le dot s'améliore
 
 - **Mémoire** : `state/memory/MEMORY.md`, lue au début de chaque session (conversation et runs). C'est le lien entre ses sessions : il y note avec `remember` ce qui servira ailleurs (une décision, le fonctionnement d'un service, ce qui a été abandonné), et retire avec `forget` ce qui n'est plus vrai.
-- **Skills** : il s'écrit ses propres skills (`state/agent/skills/`). Un skill mal formé (sans en-tête `name` / `description`, donc ignoré par pi) lui est signalé pour qu'il le corrige.
-- **Extensions** : il peut aussi s'écrire des extensions pi (`state/agent/extensions/`), gardées d'un démarrage à l'autre. Seules les extensions du dépôt et ses consignes sont remplacées à chaque démarrage.
+- **Skills** : il s'écrit ses propres skills (`skills/`, à côté de `state/`). Un skill mal formé (sans en-tête `name` / `description`, donc ignoré par pi) lui est signalé pour qu'il le corrige.
+- **Extensions** : il peut aussi s'écrire des extensions pi (`extensions/`), gardées d'un démarrage à l'autre. Les extensions du dépôt, elles, viennent de l'image et ne se mélangent pas aux siennes.
 - **Budget de contexte** : chaque outil déclaré au modèle coûte des jetons à chaque appel. Le dot connaît son modèle et sa fenêtre, compte ce qu'il utilise vraiment (outils et skills, par jour), et décide lui-même avec l'outil `budget` ce qui reste déclaré (`direct`) ou n'est chargé qu'à la demande (`deferred`, trouvé par `tool_search`). Ses outils de base restent toujours déclarés. Ses choix sont réversibles : un outil différé reste utilisable et son usage est compté ; s'il le recharge souvent, il en est averti.
 - **Bilan** : tous les `DOT_REVIEW_DAYS` jours (le premier dès le lendemain), il vérifie si ses changements précédents ont tenu leurs promesses, corrige la cause de ses échecs de la période, tient compte de tes retours, ajuste ses outils et allège ses skills. Il note chaque changement avec sa mesure de départ, pour comparer au bilan suivant.
 - **Retours** : quand il te livre quelque chose de nouveau (un skill, un rapport régulier, un objectif atteint), il te demande ton avis en une question courte, et retient ta réponse.
@@ -302,7 +325,9 @@ Le dot a le même diagnostic (outil `doctor`, sur une période réglable) pour s
 
 `./dot test` lance les tests automatiques dans l'image, sur le code du dépôt (sans reconstruire) :
 - **le cœur** : plan, échéances, détection de panne du modèle, mémoire, skills mal formés, comptage d'usage et choix des outils déclarés ;
-- **le coffre de bout en bout**, avec un faux service et un faux Telegram : marqueurs, serveurs autorisés, lecture seule, adresses privées, demande de secret (interception, enregistrement, effacement, annulation, élargissement, redémarrage), et réponse depuis la machine.
+- **le coffre de bout en bout**, avec un faux service et un faux Telegram : marqueurs, serveurs autorisés, lecture seule, adresses privées, demande de secret (interception, enregistrement, effacement, annulation, élargissement, redémarrage), et réponse depuis la machine ;
+- **le fichier `.dot`** : lecture, extraction de `env` et `model`, refus des secrets hors du vault, mise à jour du vault en gardant les commentaires, création et copie vierge ;
+- **le relais RPC** : plusieurs clients, réponses rendues au bon client, demandes à l'interface.
 
 Pas encore testés automatiquement : la lecture IMAP, les runs et le battement eux-mêmes.
 
@@ -335,11 +360,12 @@ image/extensions/dot-local/     canal local (state/channel)
 image/vault/                    le coffre : proxy filtré, secrets remplacés au passage, demandes, IMAP
 image/doctor.mjs                diagnostic, côté dot
 tools/chat.py                   le canal local, côté machine (chat, ask, send, secret, livrables)
-tools/veilleur.py               le veilleur (allumer / éteindre depuis Telegram)
+tools/veilleur.py               le veilleur, un pour tous les dots (allumer / éteindre depuis Telegram)
 tools/suivre.py                 le run en cours, en direct
 tools/journal.py                lecture du journal
 image/hub.mjs                   le relais RPC (interface rpc)
 tools/rpc.py                    le connecteur RPC, côté machine
 integrations/pi-skill-dots/     skill d'exemple : faire gérer des dots par un autre agent pi
 tests/                          tests automatiques
+.vscode/settings.json           VS Code ouvre les fichiers .dot comme du YAML
 ```

@@ -1,8 +1,3 @@
-# Variables de l'utilisateur : jamais dans le dépôt
-.env
-config/*
-!config/*.example.*
-
 # État du dot (mémoire, sessions, navigateur, travail) : propre à chaque machine
 state/
 
@@ -12,5 +7,6 @@ __pycache__/
 # Notes de travail personnelles
 roadmap.md
 
-# Les dots (créés par ./dot create) : leurs fichiers contiennent leurs secrets
+# Les dots (créés par ./dot create) : leurs fichiers .dot contiennent leurs secrets
 dots/
+*.dot
