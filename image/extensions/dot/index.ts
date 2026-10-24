@@ -424,11 +424,12 @@ export default function (pi: ExtensionAPI) {
   }
 
   // Revue de budget : régulièrement, le dot regarde ce qu'il utilise vraiment et ajuste ce qui est
-  // déclaré au modèle. La première attend une période complète : il faut un usage représentatif.
+  // déclaré au modèle. Ses choix sont réversibles (un outil différé reste utilisable et son usage est
+  // compté) : la première revue a lieu dès le lendemain.
   function dueReview(at: Date) {
     if (REVIEW_DAYS <= 0) return;
     const state = loadState();
-    if (!state.nextReview) return changeState((s) => (s.nextReview = later(REVIEW_DAYS * 24 * 60)));
+    if (!state.nextReview) return changeState((s) => (s.nextReview = later(24 * 60)));
     if (at < new Date(state.nextReview)) return;
     changeState((s) => (s.nextReview = later(REVIEW_DAYS * 24 * 60)));
     enqueue(
@@ -678,6 +679,14 @@ function declared(pi: ExtensionAPI) {
   return pi.getAllTools().filter((t: any) => active.has(t.name));
 }
 
+// Outils mis en différé mais rechargés souvent ces 7 derniers jours : le choix est à revoir.
+function reloaded(pi: ExtensionAPI): string[] {
+  const usage = readUsage(MEMORY);
+  const deferredNow = Object.entries(readLoadout(MEMORY)).filter(([, e]) => e === "deferred").map(([n]) => n);
+  const often = deferredNow.filter((n) => uses(usage.tools[n], 7).count >= 3);
+  return often.length ? [`You deferred these tools but used them often in the last 7 days: ${often.join(", ")}. Consider making them direct again (\`budget\` set).`] : [];
+}
+
 // Une note fixe pour la session (le début du contexte reste identique d'un appel à l'autre).
 function budgetSection(pi: ExtensionAPI, ctx: any): string {
   const model = ctx?.model;
@@ -689,6 +698,7 @@ function budgetSection(pi: ExtensionAPI, ctx: any): string {
     `Before you do anything, your instructions and the ${tools.length} tools declared to you take thousands of tokens (tools alone ≈ ${toolTokens}), on every single call. Every token costs time, and the model may run on the person's own hardware.`,
     "Be frugal: keep skills short (the essentials in SKILL.md, details in separate files read only when needed), make scripts print only what you need, never paste large outputs, and keep rarely used tools deferred (`tool_search` loads them when needed).",
     "`budget` shows what you really use (tools, skills, runs) and lets you choose what stays declared.",
+    ...reloaded(pi),
   ].join("\n");
 }
 
@@ -837,6 +847,22 @@ function registerTools(pi: ExtensionAPI) {
         return answer(`${exposure}: ${applied.join(", ") || "nothing"}${refused.length ? ` · refused (base tools stay direct): ${refused.join(", ")}` : ""}. Takes effect from your next run.`);
       }
       return answer("Unknown action: use show or set.", true);
+    },
+  });
+
+  reg({
+    name: "doctor",
+    label: "doctor",
+    description:
+      "Check your own health, link by link: vault, internet, model, Telegram, heartbeat, plan, skills, memory, resources, and the problems logged in the last 24 hours. " +
+      "Use it when something does not work as expected, before guessing.",
+    promptSnippet: "doctor: diagnose your environment (vault, model, Telegram, heartbeat, skills, resources, recent problems)",
+    parameters: Type.Object({}),
+    async execute() {
+      const output = await new Promise<string>((resolve) =>
+        execFile("node", ["/opt/dot/doctor.mjs"], { timeout: 60_000 }, (error, stdout, stderr) => resolve(`${stdout}${stderr}`.trim() || String(error?.message ?? ""))),
+      );
+      return answer(output || "doctor: no output");
     },
   });
 

@@ -16,6 +16,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
+import { log } from "../dot/log.ts";
 
 interface Attachment {
   id: string;
@@ -272,6 +273,7 @@ export default function (pi: ExtensionAPI) {
 
   // --- Entrée : la file du bot, lue en continu ---
   let stop: AbortController | null = null;
+  let lastConflict = 0;
   async function poll(signal: AbortSignal) {
     await tg("setMyCommands", { commands: COMMANDS }, signal).catch(() => {});
     while (!signal.aborted) {
@@ -300,7 +302,13 @@ export default function (pi: ExtensionAPI) {
             pi.sendUserMessage(content, { expandPromptTemplates: true, deliverAs: "followUp" });
           }
         }
-      } catch {
+      } catch (error: any) {
+        // 409 Conflict : un autre programme lit le même bot (un autre agent avec le même jeton).
+        // Les messages de la personne partent alors chez l'un ou chez l'autre.
+        if (/conflict/i.test(String(error?.message)) && Date.now() - lastConflict > 10 * 60_000) {
+          lastConflict = Date.now();
+          log("telegram.conflict", { error: String(error.message).slice(0, 200) });
+        }
         if (!signal.aborted) await new Promise((r) => setTimeout(r, 5000));
       }
     }

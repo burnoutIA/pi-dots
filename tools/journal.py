@@ -16,7 +16,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 LOGS = Path(__file__).resolve().parent.parent / "state" / "logs"
-PROBLEMS = {"notify.blocked", "model.down", "model.up", "loop.suspect", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error"}
+PROBLEMS = {"telegram.conflict", "notify.blocked", "model.down", "model.up", "loop.suspect", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error"}
 
 
 def hour(iso: str) -> str:
@@ -79,6 +79,8 @@ def describe(e) -> str:
         return f"↓ événement {e.get('kind')} {detail}{late}"
     if t == "schedule.skipped":
         return f"⚠ tâche {e.get('schedule')} sautée (en retard de {e.get('lateMin')} min, sans rattrapage)"
+    if t == "telegram.conflict":
+        return "⚠ conflit Telegram : un autre programme lit le même bot (tes messages peuvent partir chez lui)"
     if t == "budget.set":
         return f"⚙ outils passés en {e.get('exposure')} : {', '.join(e.get('tools') or [])}"
     if t == "memory.remember":

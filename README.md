@@ -107,7 +107,7 @@ Toutes les 15 s, un battement lit le plan **sans passer par le modèle**. Il ne 
   - un même appel d'outil répété `DOT_LOOP_REPEATS` fois dans un run (à la suite ou non) arrête le run : c'est une boucle.
 - **Panne du modèle** : un run qui échoue parce que le modèle ne répond pas n'est pas compté comme un échec. Le travail attend, le dot te prévient une fois et réessaie de plus en plus espacé (2, 4, 8 puis 15 min), puis te prévient quand le modèle revient.
 - **`notify`** : le dot te prévient quand il travaille de lui-même (sur Telegram, ou dans `state/memory/NOTIFICATIONS.md`). Pas de limite de nombre : le dot n'écrit que s'il a du nouveau. Un message qui redit la même chose qu'un message des 6 dernières heures n'est pas renvoyé.
-- **Budget de contexte** : chaque outil déclaré au modèle coûte des jetons à chaque appel. Le dot connaît son modèle et sa fenêtre, compte ce qu'il utilise vraiment (outils et skills, par jour), et décide lui-même avec l'outil `budget` ce qui reste déclaré (`direct`) ou n'est chargé qu'à la demande (`deferred`, trouvé par `tool_search`). Ses outils de base restent toujours déclarés. Tous les `DOT_REVIEW_DAYS` jours (7), il fait sa revue : il ajuste ces choix et allège ses skills.
+- **Budget de contexte** : chaque outil déclaré au modèle coûte des jetons à chaque appel. Le dot connaît son modèle et sa fenêtre, compte ce qu'il utilise vraiment (outils et skills, par jour), et décide lui-même avec l'outil `budget` ce qui reste déclaré (`direct`) ou n'est chargé qu'à la demande (`deferred`, trouvé par `tool_search`). Ses outils de base restent toujours déclarés. Ses choix sont réversibles : un outil différé reste utilisable et son usage compté ; s'il le recharge souvent, sa note de budget le lui signale. Tous les `DOT_REVIEW_DAYS` jours (7, la première dès le lendemain), il fait sa revue : il ajuste ces choix et allège ses skills.
 - **Mémoire** : `state/memory/MEMORY.md`, lue au début de chaque session (conversation et runs). Le dot y note avec `remember` ce qui doit servir d'une session à l'autre, et retire avec `forget` ce qui n'est plus vrai. Un skill mal formé (sans en-tête `name` / `description`, donc ignoré par pi) lui est signalé pour qu'il le corrige.
 
 ## Journal : savoir ce qui s'est passé
@@ -122,6 +122,14 @@ Le dot tient un journal technique horodaté, avec un fichier par jour dans `stat
 ./dot journal --runs        # un run par ligne : début, fin, durée, résultat
 ./dot journal --reseau      # avec chaque sortie réseau vue par le coffre
 ```
+
+## Diagnostic
+
+`./dot doctor` vérifie chaque maillon et dit ce qui est en panne (❌) ou à surveiller (⚠️) :
+- **côté machine** : le moteur, l'image à jour par rapport au code, la configuration, aucun secret visible du dot, le coffre et le dot en marche ;
+- **côté dot** : le coffre, internet, le modèle, Telegram (dont des messages en attente que personne ne lit), le battement, un run bloqué, les todos en attente, les skills non chargés, la mémoire, la mémoire vive, le disque, et les problèmes du journal sur 24 heures.
+
+Le dot a le même diagnostic (outil `doctor`) pour se vérifier lui-même quand quelque chose ne marche pas. Un autre programme qui lit le même bot Telegram est détecté et noté au journal.
 
 ## Tests
 
