@@ -12,7 +12,7 @@ import sys
 import threading
 from pathlib import Path
 
-SOCKET = Path(os.environ.get("DOT_RPC_SOCKET") or Path(__file__).resolve().parent.parent / "state" / "channel" / "rpc.sock")
+SOCKET = Path(os.environ.get("DOT_RPC_SOCKET") or Path(os.environ.get("DOT_STATE") or Path(__file__).resolve().parent.parent / "state") / "channel" / "rpc.sock")
 
 
 def main():

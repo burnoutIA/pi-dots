@@ -10,12 +10,13 @@
 """
 
 import json
+import os
 import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
 
-LOGS = Path(__file__).resolve().parent.parent / "state" / "logs"
+LOGS = Path(os.environ.get("DOT_STATE") or Path(__file__).resolve().parent.parent / "state") / "logs"
 PROBLEMS = {"telegram.conflict", "notify.blocked", "model.down", "model.up", "loop.suspect", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error"}
 
 

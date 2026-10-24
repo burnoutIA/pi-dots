@@ -20,10 +20,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CHANNEL = ROOT / "state" / "channel"
+DIR = Path(os.environ.get("DOT_DIR") or ROOT)  # le dossier du dot (.env, config/)
+STATE_DIR = Path(os.environ.get("DOT_STATE") or DIR / "state")
+NAME = os.environ.get("DOT_NAME", "dot")
+CLI = os.environ.get("DOT_CLI") or str(ROOT / "dot")
+CHANNEL = STATE_DIR / "channel"
 POWER = CHANNEL / "power.json"
 ALIVE = CHANNEL / "veilleur.json"
-LOGS = ROOT / "state" / "logs"
+LOGS = STATE_DIR / "logs"
 ENGINE = os.environ.get("DOT_ENGINE_BIN", "podman")
 
 
@@ -36,7 +40,7 @@ def log(kind: str, **data):
 
 def setting(name: str) -> str:
     try:
-        for line in (ROOT / ".env").read_text().splitlines():
+        for line in (DIR / ".env").read_text().splitlines():
             if line.startswith(f"{name}="):
                 return line.split("=", 1)[1].strip().strip("\"'")
     except FileNotFoundError:
@@ -46,7 +50,7 @@ def setting(name: str) -> str:
 
 def token() -> str:
     try:
-        return json.loads((ROOT / "config" / "vault.json").read_text())["secrets"]["TELEGRAM_TOKEN"]["value"]
+        return json.loads((DIR / "config" / "vault.json").read_text())["secrets"]["TELEGRAM_TOKEN"]["value"]
     except Exception:
         return ""
 
@@ -58,11 +62,11 @@ def telegram(method: str, params: dict, timeout: int = 30):
         return json.load(r).get("result")
 
 
-STATE = ROOT / "state" / "memory" / "state.json"
+STATE = STATE_DIR / "memory" / "state.json"
 
 
 def engine_says_running() -> bool:
-    out = subprocess.run([ENGINE, "inspect", "-f", "{{.State.Running}}", "dot"], capture_output=True, text=True)
+    out = subprocess.run([ENGINE, "inspect", "-f", "{{.State.Running}}", NAME], capture_output=True, text=True)
     return out.stdout.strip() == "true"
 
 
@@ -79,7 +83,7 @@ def running() -> bool:
 
 
 def dot(action: str):
-    subprocess.run([str(ROOT / "dot"), action], capture_output=True)
+    subprocess.run([CLI, f"@{NAME}", action], capture_output=True)
 
 
 def main():

@@ -17,6 +17,23 @@ cp config/models.example.json config/models.json  # si ton provider n'est pas co
 
 Il faut docker ou podman. Le script prend celui qui est installé ; on peut forcer avec `DOT_ENGINE=docker`.
 
+## Plusieurs dots
+
+Un dépôt peut faire vivre plusieurs dots, chacun avec ses conteneurs, son réseau, son coffre, son état et son socket :
+
+```bash
+./dot create travail          # dots/travail/ : reprend la configuration du dot par défaut (modèle), sans Telegram
+./dot create perso --from travail
+./dot list                    # lesquels existent, lesquels tournent (--json pour un programme)
+./dot @travail start          # @nom en premier argument vise un dot précis
+./dot use travail             # ou change le dot par défaut
+./dot remove travail --yes    # efface son état, sa mémoire et ses secrets
+```
+
+Le dot `dot` garde ses fichiers à la racine du dépôt (`.env`, `config/`, `state/`) ; les autres vivent dans `dots/<nom>/` (hors git). Un nouveau dot ne reçoit du coffre d'origine que les secrets dont son modèle a besoin. Un bot Telegram n'ayant qu'un lecteur, chaque dot qui veut Telegram a son propre bot.
+
+Toutes les commandes ci-dessous s'appliquent au dot visé (`./dot @nom …`).
+
 ## Les commandes
 
 | Commande | Rôle |
@@ -30,12 +47,14 @@ Il faut docker ou podman. Le script prend celui qui est installé ; on peut forc
 | `./dot secret` | répondre à une demande de secret du coffre |
 | `./dot veilleur install` | allumer / éteindre le dot depuis Telegram (voir plus bas) |
 | `./dot suivre` | le run de travail en cours, en direct |
-| `./dot attach` | son terminal pi en direct (`Ctrl-b d` pour en sortir sans l'arrêter) |
+| `./dot attach` | son terminal pi en direct (`Ctrl-b d` pour en sortir sans l'arrêter ; interface `tui`) |
+| `./dot rpc` | connecteur RPC (interface `rpc`) |
+| `./dot create`, `list`, `use`, `remove` | gérer plusieurs dots |
 | `./dot shell` | un shell dans son environnement |
 | `./dot journal` | ce qu'il a fait (`-p` problèmes, `-f` en direct, `--runs`, `--reseau`, ou une date) |
 | `./dot doctor` | diagnostic complet |
 | `./dot test` | tests automatiques |
-| `./dot status` / `./dot logs` | en marche ou non / sortie brute des conteneurs |
+| `./dot status [--json]` / `./dot logs` | en marche ou non / sortie brute des conteneurs |
 
 ## Configuration (jamais versionnée)
 
@@ -57,6 +76,18 @@ Les réglages de `.env` (valeurs par défaut entre parenthèses) :
 | `DOT_REVIEW_DAYS` | rythme du bilan du dot (7 ; 0 = jamais) |
 | `DOT_LOG_DAYS` | durée de conservation du journal (30) |
 | `TZ` | fuseau horaire des tâches planifiées |
+
+## Interface : terminal ou RPC
+
+`DOT_INTERFACE` dans `.env` :
+- `tui` (par défaut) : le pi de conversation tourne dans un terminal, qu'on rejoint avec `./dot attach` ;
+- `rpc` : il tourne en mode RPC derrière un relais, joignable par un socket (`state/channel/rpc.sock`). Le protocole est **celui de `pi --mode rpc`**, inchangé : un programme qui sait piloter pi en RPC pilote un dot en lançant `./dot rpc` à la place de `pi --mode rpc` (les options passées sont ignorées : la configuration appartient au dot). Plusieurs clients peuvent se connecter en même temps ; chacun reçoit ses réponses et tous reçoivent les événements. Une demande à l'interface (confirmation, choix) va à tous, la première réponse l'emporte ; sans client connecté, elle est annulée pour que le dot ne reste jamais bloqué.
+
+Dans les deux cas, Telegram, `./dot chat` et le reste fonctionnent.
+
+## Faire gérer des dots par un autre agent
+
+`integrations/pi-skill-dots/SKILL.md` est un skill pi d'exemple : installé dans un autre agent pi (avec `DOTS_CLI` pointant vers le script `dot`), il lui permet de créer, allumer, éteindre, lister des dots et leur parler. Il ne s'appuie que sur le script `dot` et ses sorties `--json`.
 
 ## Parler au dot
 
@@ -261,5 +292,8 @@ tools/chat.py                   le canal local, côté machine (chat, ask, send,
 tools/veilleur.py               le veilleur (allumer / éteindre depuis Telegram)
 tools/suivre.py                 le run en cours, en direct
 tools/journal.py                lecture du journal
+image/hub.mjs                   le relais RPC (interface rpc)
+tools/rpc.py                    le connecteur RPC, côté machine
+integrations/pi-skill-dots/     skill d'exemple : faire gérer des dots par un autre agent pi
 tests/                          tests automatiques
 ```

@@ -6,11 +6,12 @@ runs les uns après les autres ; entre deux runs, le dernier reste affiché.
 """
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
-LIVE = Path(__file__).resolve().parent.parent / "state" / "channel" / "live.json"
+LIVE = Path(os.environ.get("DOT_STATE") or Path(__file__).resolve().parent.parent / "state") / "channel" / "live.json"
 
 
 def main():

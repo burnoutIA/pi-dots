@@ -1,31 +1,30 @@
 #!/usr/bin/env bash
-# dot — lancer, arrêter et rejoindre l'environnement du dot (docker ou podman).
+# dot — créer, lancer, arrêter et rejoindre des dots (docker ou podman).
 #
-#   ./dot build     construire l'image
-#   ./dot start     lancer le coffre puis le dot (il reprend là où il en était)
-#   ./dot stop      tout arrêter (l'état reste dans state/)
-#   ./dot attach    rejoindre le terminal de pi (Ctrl-b d pour en sortir sans l'arrêter ; mode tui)
-#   ./dot rpc       connecteur RPC : remplace `pi --mode rpc` pour un client (mode rpc)
-#   ./dot suivre    voir le run en cours, en direct
-#   ./dot chat      parler au dot depuis la machine (ou ./dot ask "message")
-#   ./dot send      lui déposer un fichier · ./dot livrables : ce qu'il a produit pour toi
-#   ./dot secret    répondre à une demande de secret du coffre
-#   ./dot veilleur  install | uninstall | status : allumer/éteindre le dot depuis Telegram
-#   ./dot shell     un shell dans l'environnement
-#   ./dot doctor    diagnostic complet (machine, coffre, modèle, Telegram, battement…)
-#   ./dot test      lancer les tests automatiques
-#   ./dot journal   ce que le dot a fait aujourd'hui (-p problèmes, -f en direct, --runs, ou une date)
-#   ./dot logs      sortie brute des conteneurs
-#   ./dot status    en marche ou non
+#   ./dot create nom      créer un dot (dots/nom/) ; ./dot remove nom --yes pour le supprimer
+#   ./dot list [--json]   les dots, et lesquels tournent ; ./dot use nom : le dot par défaut
+#   ./dot build           construire l'image (commune à tous les dots)
+#   ./dot start / stop    lancer (le coffre puis le dot) / arrêter ; l'état reste dans son dossier
+#   ./dot chat            parler au dot (ou ./dot ask "message")
+#   ./dot send            lui déposer un fichier · ./dot livrables : ce qu'il a produit pour toi
+#   ./dot secret          répondre à une demande de secret du coffre
+#   ./dot suivre          voir le run en cours, en direct
+#   ./dot rpc             connecteur RPC : remplace `pi --mode rpc` pour un client (mode rpc)
+#   ./dot attach          le terminal de pi (Ctrl-b d pour en sortir sans l'arrêter ; mode tui)
+#   ./dot veilleur        install | uninstall | status : allumer/éteindre le dot depuis Telegram
+#   ./dot shell           un shell dans l'environnement du dot
+#   ./dot doctor          diagnostic complet (machine, coffre, modèle, Telegram, battement…)
+#   ./dot journal         ce que le dot a fait aujourd'hui (-p problèmes, -f en direct, --runs, ou une date)
+#   ./dot status [--json] en marche ou non · ./dot logs : sortie brute des conteneurs
+#   ./dot test            lancer les tests automatiques
+#
+# Le dot visé : `./dot @nom commande …`, sinon DOT_NAME, sinon celui de `./dot use`, sinon « dot ».
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NAME="${DOT_NAME:-dot}"
-VAULT=dot-vault                 # nom fixe : le dot le joint à http://dot-vault:8080
 IMAGE="${DOT_IMAGE:-dots:latest}"
-NET_INTERNAL=dot-internal       # le dot et le coffre, sans aucune sortie
-NET_EXTERNAL=dot-external       # le coffre seul : internet et la machine hôte
-PROXY="http://$VAULT:8080"
+NET_EXTERNAL=dot-external       # commun aux coffres : internet et la machine hôte
+CURRENT_FILE="$ROOT/.dot-courant"
 
 if [ -n "${DOT_ENGINE:-}" ]; then ENGINE="$DOT_ENGINE"
 elif command -v podman >/dev/null; then ENGINE=podman
@@ -33,21 +32,46 @@ elif command -v docker >/dev/null; then ENGINE=docker
 else echo "Il faut docker ou podman." >&2; exit 1
 fi
 
+# --- Le dot visé -----------------------------------------------------------------------------
+if [ "${1:-}" != "${1#@}" ]; then NAME="${1#@}"; shift
+elif [ -n "${DOT_NAME:-}" ]; then NAME="$DOT_NAME"
+elif [ -f "$CURRENT_FILE" ]; then NAME="$(cat "$CURRENT_FILE")"
+else NAME=dot; fi
+valid_name() { [[ "$1" =~ ^[a-z][a-z0-9-]{0,30}$ ]]; }
+valid_name "$NAME" || { echo "Nom de dot invalide : « $NAME » (minuscules, chiffres et tirets, 31 caractères au plus)." >&2; exit 1; }
+
+# Le dot « dot » garde ses fichiers à la racine (comme avant) ; les autres vivent dans dots/<nom>/.
+dot_dir() { if [ "$1" = dot ]; then echo "$ROOT"; else echo "$ROOT/dots/$1"; fi; }
+DIR="$(dot_dir "$NAME")"
+ENV_FILE="$DIR/.env"
+CONFIG="$DIR/config"
+STATE="$DIR/state"
+VAULT="$NAME-vault"               # le conteneur du coffre ; sur le réseau du dot, il s'appelle dot-vault
+NET_INTERNAL="$NAME-internal"     # le dot et son coffre, sans aucune sortie
+PROXY="http://dot-vault:8080"
+[ "$NAME" = dot ] && NET_INTERNAL=dot-internal
+
 running() { [ "$($ENGINE inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
 network() { $ENGINE network inspect "$1" >/dev/null 2>&1 || $ENGINE network create "${@:2}" "$1" >/dev/null; }
-setting() { grep -E "^$1=" "$ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '"'"'"' '; }
+setting() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"' '; }
+exists() { [ -f "$(dot_dir "$1")/.env" ]; }
+# Le service du veilleur : celui du dot « dot » garde son nom d'origine.
+veilleur_unit() { if [ "$NAME" = dot ]; then echo dot-veilleur.service; else echo "dot-veilleur-$NAME.service"; fi; }
+need_dot() { exists "$NAME" || { echo "Pas de dot « $NAME » : ./dot create $NAME (ou ./dot list)." >&2; exit 1; }; }
+# Ce que les outils de la machine (tools/*.py) doivent savoir du dot visé.
+export DOT_NAME="$NAME" DOT_STATE="$STATE" DOT_DIR="$DIR" DOT_VAULT_NAME="$VAULT" DOT_ENGINE_BIN="$ENGINE" DOT_CLI="$ROOT/dot"
 
 # Le dot ne doit voir aucun secret : ils vivent dans config/vault.json, lu par le coffre seul.
 check_secrets() {
   local leaks
-  leaks="$(grep -E '^[A-Z0-9_]*(API_KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*=.+' "$ROOT/.env" | cut -d= -f1 || true)"
+  leaks="$(grep -E '^[A-Z0-9_]*(API_KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*=.+' "$ENV_FILE" | cut -d= -f1 || true)"
   if [ -n "$leaks" ]; then
-    echo "Ces variables de .env ressemblent à des secrets : $(echo $leaks)." >&2
+    echo "Ces variables de $ENV_FILE ressemblent à des secrets : $(echo $leaks)." >&2
     echo "Le dot les verrait. Déplacez-les dans config/vault.json (voir config/vault.example.json)." >&2
     exit 1
   fi
-  if grep -qE '"apiKey"\s*:\s*"(sk-|[A-Za-z0-9_-]{24,})' "$ROOT/config/models.json" 2>/dev/null; then
-    echo "config/models.json contient une clé d'API : le dot la verrait." >&2
+  if grep -qE '"apiKey"\s*:\s*"(sk-|[A-Za-z0-9_-]{24,})' "$CONFIG/models.json" 2>/dev/null; then
+    echo "$CONFIG/models.json contient une clé d'API : le dot la verrait." >&2
     echo "Mettez-la dans config/vault.json (ex. MODEL_KEY), et dans models.json \"apiKey\": \"{{MODEL_KEY}}\" avec \"baseUrl\": \"$PROXY/https/<serveur>/…\"." >&2
     exit 1
   fi
@@ -57,38 +81,124 @@ start_vault() {
   running "$VAULT" && return
   $ENGINE rm -f "$VAULT" >/dev/null 2>&1 || true
   local args=(
-    -d --name "$VAULT" --hostname "$VAULT"
+    -d --name "$VAULT" --hostname dot-vault
     --memory 256m --cpus 1 --pids-limit 256
-    # vault.json en écriture : le coffre y ajoute les secrets que la personne lui donne par Telegram.
-    -v "$ROOT/config/vault.json:/vault/vault.json"
-    -v "$ROOT/state/logs:/logs"
-    -v "$ROOT/state/inbox:/inbox"
+    # vault.json en écriture : le coffre y ajoute les secrets que la personne lui donne.
+    -v "$CONFIG/vault.json:/vault/vault.json"
+    -v "$STATE/logs:/logs"
+    -v "$STATE/inbox:/inbox"
     -e "TZ=$(setting TZ)"
     -e "TELEGRAM_OWNER_ID=$(setting TELEGRAM_OWNER_ID)"
     --add-host host.docker.internal:host-gateway
     --entrypoint node
   )
   if [ "$ENGINE" = podman ]; then
-    args+=(--userns keep-id --network "$NET_INTERNAL" --network "$NET_EXTERNAL")
+    args+=(--userns keep-id --network "$NET_INTERNAL:alias=dot-vault" --network "$NET_EXTERNAL")
     $ENGINE run "${args[@]}" "$IMAGE" /opt/dot/vault/vault.mjs >/dev/null
   else
     $ENGINE run "${args[@]}" --network "$NET_EXTERNAL" "$IMAGE" /opt/dot/vault/vault.mjs >/dev/null
-    $ENGINE network connect "$NET_INTERNAL" "$VAULT"
+    $ENGINE network connect --alias dot-vault "$NET_INTERNAL" "$VAULT"
   fi
 }
 
+# Tous les dots : celui de la racine (s'il a un .env) et ceux de dots/.
+all_dots() {
+  [ -f "$ROOT/.env" ] && echo dot
+  if [ -d "$ROOT/dots" ]; then for d in "$ROOT"/dots/*/; do [ -f "$d.env" ] && basename "$d"; done; fi
+  return 0
+}
+
+json_status() { # nom → objet JSON
+  local n="$1" dir; dir="$(dot_dir "$n")"
+  local iface; iface="$(grep -E '^DOT_INTERFACE=' "$dir/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"' ')"
+  local run=false vrun=false
+  running "$n" && run=true
+  running "$n-vault" && vrun=true
+  printf '{"name":"%s","running":%s,"vault":%s,"interface":"%s","dir":"%s","socket":"%s"}' \
+    "$n" "$run" "$vrun" "${iface:-tui}" "$dir" "$dir/state/channel/rpc.sock"
+}
+
 case "${1:-}" in
+  create)
+    new="${2:-}"
+    valid_name "$new" || { echo "Usage : ./dot create nom (minuscules, chiffres et tirets)." >&2; exit 1; }
+    exists "$new" && { echo "Le dot « $new » existe déjà." >&2; exit 1; }
+    from="${3:-}"; [ "$from" = "--from" ] && from="${4:-}" || from=""
+    target="$(dot_dir "$new")"
+    mkdir -p "$target/config" "$target/state"
+    # Configuration de départ : celle d'un dot existant (--from nom, ou le dot par défaut s'il existe),
+    # sans son Telegram (un bot n'a qu'un lecteur) ; sinon les exemples du dépôt.
+    src="${from:-}"; [ -z "$src" ] && exists dot && [ "$new" != dot ] && src=dot
+    if [ -n "$src" ]; then
+      exists "$src" || { echo "Pas de dot « $src » à copier." >&2; exit 1; }
+      sdir="$(dot_dir "$src")"
+      sed -e 's/^TELEGRAM_OWNER_ID=.*/TELEGRAM_OWNER_ID=/' "$sdir/.env" > "$target/.env"
+      [ -f "$sdir/config/models.json" ] && cp "$sdir/config/models.json" "$target/config/models.json"
+      # Du coffre, seulement les secrets dont models.json a besoin ({{NOM}}) : l'accès au modèle.
+      python3 -I - "$sdir/config/vault.json" "$target/config/vault.json" "$target/config/models.json" <<'PY'
+import json, re, sys
+src, dst, models = sys.argv[1:4]
+try:
+    vault = json.load(open(src))
+except FileNotFoundError:
+    vault = {"secrets": {}}
+try:
+    needed = set(re.findall(r"\{\{\s*([A-Z0-9_]+)\s*\}\}", open(models).read()))
+except FileNotFoundError:
+    needed = set()
+json.dump({"secrets": {k: v for k, v in vault.get("secrets", {}).items() if k in needed}, "allow": vault.get("allow", [])}, open(dst, "w"), indent=2, ensure_ascii=False)
+PY
+      chmod 600 "$target/config/vault.json"
+      echo "Dot « $new » créé dans $target, avec la configuration de « $src » (sans Telegram)."
+    else
+      cp "$ROOT/.env.example" "$target/.env"
+      cp "$ROOT/config/vault.example.json" "$target/config/vault.json"; chmod 600 "$target/config/vault.json"
+      cp "$ROOT/config/models.example.json" "$target/config/models.json"
+      echo "Dot « $new » créé dans $target : remplis .env, config/vault.json et config/models.json."
+    fi
+    echo "Lance-le avec : ./dot @$new start"
+    ;;
+  remove)
+    gone="${2:-}"
+    valid_name "$gone" && exists "$gone" || { echo "Pas de dot « $gone »." >&2; exit 1; }
+    [ "$gone" = dot ] && { echo "Le dot « dot » vit à la racine du dépôt : supprime state/ et .env à la main si tu y tiens." >&2; exit 1; }
+    [ "${3:-}" = "--yes" ] || { echo "Supprimer « $gone » efface son état, sa mémoire et ses secrets ($(dot_dir "$gone")). Confirme : ./dot remove $gone --yes" >&2; exit 1; }
+    DOT_NAME="$gone" "$0" stop >/dev/null 2>&1 || true
+    $ENGINE network rm "$gone-internal" >/dev/null 2>&1 || true
+    if [ "$ENGINE" = podman ]; then podman unshare rm -rf "$(dot_dir "$gone")"; else rm -rf "$(dot_dir "$gone")"; fi
+    [ -f "$CURRENT_FILE" ] && [ "$(cat "$CURRENT_FILE")" = "$gone" ] && rm -f "$CURRENT_FILE"
+    echo "Dot « $gone » supprimé."
+    ;;
+  list)
+    if [ "${2:-}" = "--json" ]; then
+      first=1; printf '['
+      for n in $(all_dots); do [ $first = 1 ] || printf ','; first=0; json_status "$n"; done
+      printf ']\n'
+    else
+      current="$(cat "$CURRENT_FILE" 2>/dev/null || echo dot)"
+      for n in $(all_dots); do
+        state="éteint"; running "$n" && state="allumé"
+        mark=" "; [ "$n" = "$current" ] && mark="*"
+        printf '%s %-20s %-8s %s\n' "$mark" "$n" "$state" "$(grep -E '^DOT_INTERFACE=' "$(dot_dir "$n")/.env" | cut -d= -f2 || echo tui)"
+      done
+    fi
+    ;;
+  use)
+    valid_name "${2:-}" && exists "$2" || { echo "Pas de dot « ${2:-} » (./dot list)." >&2; exit 1; }
+    if [ "$2" = dot ]; then rm -f "$CURRENT_FILE"; else echo "$2" > "$CURRENT_FILE"; fi
+    echo "Dot par défaut : $2"
+    ;;
   build)
     $ENGINE build -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT"
     ;;
   start)
-    if running "$NAME"; then echo "Le dot tourne déjà. ./dot attach pour le rejoindre."; exit 0; fi
-    [ -f "$ROOT/.env" ] || { echo "Il manque .env : copiez .env.example en .env et remplissez-le." >&2; exit 1; }
-    [ -f "$ROOT/config/vault.json" ] || { echo "Il manque config/vault.json : copiez config/vault.example.json et remplissez-le." >&2; exit 1; }
+    need_dot
+    if running "$NAME"; then echo "Le dot « $NAME » tourne déjà."; exit 0; fi
+    [ -f "$CONFIG/vault.json" ] || { echo "Il manque $CONFIG/vault.json : copiez config/vault.example.json et remplissez-le." >&2; exit 1; }
     check_secrets
     $ENGINE image inspect "$IMAGE" >/dev/null 2>&1 || $ENGINE build -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT"
     # Créés ici, à l'utilisateur de la machine : sinon le moteur les crée lui-même, à un autre propriétaire.
-    mkdir -p "$ROOT/config" "$ROOT"/state/{agent,memory,inbox,workspace,browser,logs,channel/in,channel/out,livrables}
+    mkdir -p "$CONFIG" "$STATE"/{agent,memory,inbox,workspace,browser,logs,channel/in,channel/out,livrables}
     network "$NET_INTERNAL" --internal
     network "$NET_EXTERNAL"
     start_vault
@@ -101,21 +211,21 @@ case "${1:-}" in
       --cpus "${cpus:-4}"
       --pids-limit "${pids:-2048}"
       --network "$NET_INTERNAL"
-      --env-file "$ROOT/.env"
+      --env-file "$ENV_FILE"
       -e "DOT_VAULT=$PROXY"
       -e "HTTP_PROXY=$PROXY" -e "HTTPS_PROXY=$PROXY" -e "http_proxy=$PROXY" -e "https_proxy=$PROXY"
-      -e "NO_PROXY=$VAULT,localhost,127.0.0.1" -e "no_proxy=$VAULT,localhost,127.0.0.1"
+      -e "NO_PROXY=dot-vault,localhost,127.0.0.1" -e "no_proxy=dot-vault,localhost,127.0.0.1"
       -e "NODE_USE_ENV_PROXY=1"
-      -v "$ROOT/state:/dot"
+      -v "$STATE:/dot"
       --shm-size 1g
     )
     # Tout ce qui sort passe par le coffre (fetch de Node compris, ainsi que git, pip, npm, apt).
     # Seul models.json est monté depuis config/ : vault.json, qui contient les secrets, reste au coffre.
-    [ -f "$ROOT/config/models.json" ] && args+=(-v "$ROOT/config/models.json:/opt/dot/config/models.json:ro")
+    [ -f "$CONFIG/models.json" ] && args+=(-v "$CONFIG/models.json:/opt/dot/config/models.json:ro")
     # podman sans root : les fichiers de state/ restent à l'utilisateur de la machine.
     [ "$ENGINE" = podman ] && args+=(--userns keep-id)
     $ENGINE run "${args[@]}" "$IMAGE" >/dev/null
-    echo "Dot lancé, derrière son coffre. ./dot attach pour voir son terminal."
+    echo "Dot « $NAME » lancé, derrière son coffre."
     ;;
   stop)
     # podman sans root (Ubuntu) peut échouer à couper son processus réseau (pasta) quand le dernier
@@ -124,10 +234,10 @@ case "${1:-}" in
     if running "$NAME"; then quiet $ENGINE stop -t 20 "$NAME"; fi
     if running "$VAULT"; then quiet $ENGINE stop -t 5 "$VAULT"; fi
     $ENGINE rm -f "$NAME" "$VAULT" >/dev/null 2>&1 || true
-    echo "Dot arrêté. Il reprendra au prochain ./dot start."
+    echo "Dot « $NAME » arrêté. Il reprendra au prochain démarrage."
     ;;
   attach)
-    running "$NAME" || { echo "Le dot ne tourne pas : ./dot start." >&2; exit 1; }
+    running "$NAME" || { echo "Le dot « $NAME » ne tourne pas : ./dot @$NAME start." >&2; exit 1; }
     if [ "$(setting DOT_INTERFACE)" = "rpc" ]; then
       echo "Ce dot est en mode RPC (DOT_INTERFACE=rpc) : pas de terminal. Utilise ./dot chat, ou un client RPC avec ./dot rpc." >&2; exit 1
     fi
@@ -139,30 +249,32 @@ case "${1:-}" in
     exec python3 -I "$ROOT/tools/rpc.py" "$@"
     ;;
   shell)
-    running "$NAME" || { echo "Le dot ne tourne pas : ./dot start." >&2; exit 1; }
+    running "$NAME" || { echo "Le dot « $NAME » ne tourne pas." >&2; exit 1; }
     $ENGINE exec -it "$NAME" bash
     ;;
   doctor)
     # Côté machine : moteur, image à jour, conteneurs, configuration. Puis le diagnostic intérieur.
-    echo "Machine hôte :"
+    echo "Machine hôte (dot « $NAME ») :"
     echo "✅ moteur : $ENGINE"
     if ! $ENGINE image inspect "$IMAGE" >/dev/null 2>&1; then echo "❌ image absente — ./dot build"
     else
       # Heure de construction donnée en UTC par le moteur.
       built=$(date -u -d "$($ENGINE image inspect -f '{{.Created}}' "$IMAGE" | cut -d. -f1 | cut -c1-19)" +%s 2>/dev/null || echo 0)
       newest=$(find "$ROOT/image" "$ROOT/Containerfile" -type f -printf '%T@\n' | sort -n | tail -1 | cut -d. -f1)
-      if [ "$built" -gt 0 ] && [ "$newest" -gt "$built" ]; then echo "⚠️ image plus ancienne que le code — ./dot build puis ./dot stop && ./dot start"
+      if [ "$built" -gt 0 ] && [ "$newest" -gt "$built" ]; then echo "⚠️ image plus ancienne que le code — ./dot build puis redémarrer le dot"
       else echo "✅ image à jour"; fi
     fi
-    for f in .env config/vault.json; do [ -f "$ROOT/$f" ] && echo "✅ $f présent" || echo "❌ $f absent"; done
+    for f in .env config/vault.json; do [ -f "$DIR/$f" ] && echo "✅ $f présent" || echo "❌ $f absent"; done
     (check_secrets 2>&1 >/dev/null && echo "✅ aucun secret visible du dot") || echo "❌ un secret est visible du dot (voir ./dot start)"
-    running "$VAULT" && echo "✅ coffre en marche" || echo "❌ coffre arrêté — ./dot start"
-    if systemctl --user is-active dot-veilleur.service >/dev/null 2>&1; then echo "✅ veilleur en marche (allumer/éteindre depuis Telegram)"
-    else echo "⚠️ veilleur arrêté — /allumer et /eteindre ne marchent pas depuis Telegram (./dot veilleur install)"; fi
+    running "$VAULT" && echo "✅ coffre en marche" || echo "❌ coffre arrêté — ./dot @$NAME start"
+    if [ -n "$(setting TELEGRAM_OWNER_ID)" ]; then
+      if systemctl --user is-active "$(veilleur_unit)" >/dev/null 2>&1; then echo "✅ veilleur en marche (allumer/éteindre depuis Telegram)"
+      else echo "⚠️ veilleur arrêté — /allumer et /eteindre ne marchent pas depuis Telegram (./dot veilleur install)"; fi
+    fi
     if running "$NAME"; then
-      echo "✅ dot en marche"; echo; echo "Intérieur du dot :"
+      echo "✅ dot en marche ($(setting DOT_INTERFACE | sed 's/^$/tui/'))"; echo; echo "Intérieur du dot :"
       $ENGINE exec "$NAME" node /opt/dot/doctor.mjs
-    else echo "❌ dot arrêté — ./dot start"; fi
+    else echo "❌ dot arrêté — ./dot @$NAME start"; fi
     ;;
   test)
     # Les tests tournent dans l'image (Node 24), sur le code du dépôt tel qu'il est : pas besoin de reconstruire.
@@ -170,19 +282,23 @@ case "${1:-}" in
     $ENGINE run --rm -v "$ROOT/image:/src:ro" -v "$ROOT/tests:/tests:ro" --entrypoint node "$IMAGE" --test "/tests/*.test.*"
     ;;
   veilleur)
-    # Le veilleur : allume et éteint le dot depuis Telegram. Service de session (Linux, systemd).
-    unit="$HOME/.config/systemd/user/dot-veilleur.service"
+    # Le veilleur : allume et éteint le dot depuis Telegram. Service de session (Linux, systemd), un par dot.
+    unit="$HOME/.config/systemd/user/$(veilleur_unit)"
     case "${2:-status}" in
       install)
         command -v systemctl >/dev/null || { echo "Installation automatique : Linux (systemd) seulement pour l'instant. Sinon : ./dot veilleur run" >&2; exit 1; }
         mkdir -p "$(dirname "$unit")"
         cat > "$unit" <<UNIT
 [Unit]
-Description=Veilleur du dot : allumer et éteindre le dot depuis Telegram
+Description=Veilleur du dot « $NAME » : allumer et éteindre le dot depuis Telegram
 
 [Service]
 ExecStart=$(command -v python3) -I $ROOT/tools/veilleur.py
 Environment=DOT_ENGINE_BIN=$ENGINE
+Environment=DOT_NAME=$NAME
+Environment=DOT_STATE=$STATE
+Environment=DOT_DIR=$DIR
+Environment=DOT_CLI=$ROOT/dot
 Environment=PATH=$PATH
 Restart=always
 RestartSec=10
@@ -190,16 +306,16 @@ RestartSec=10
 [Install]
 WantedBy=default.target
 UNIT
-        systemctl --user daemon-reload && systemctl --user enable --now dot-veilleur.service
-        echo "Veilleur installé et lancé : il démarrera avec ta session."
+        systemctl --user daemon-reload && systemctl --user enable --now "$(veilleur_unit)"
+        echo "Veilleur du dot « $NAME » installé et lancé : il démarrera avec ta session."
         ;;
       uninstall)
-        systemctl --user disable --now dot-veilleur.service 2>/dev/null || true
+        systemctl --user disable --now "$(veilleur_unit)" 2>/dev/null || true
         rm -f "$unit"; systemctl --user daemon-reload 2>/dev/null || true
         echo "Veilleur retiré."
         ;;
-      run) DOT_ENGINE_BIN="$ENGINE" python3 -I "$ROOT/tools/veilleur.py" ;;
-      status|*) systemctl --user is-active dot-veilleur.service >/dev/null 2>&1 && echo "Le veilleur tourne." || echo "Le veilleur ne tourne pas (./dot veilleur install)." ;;
+      run) python3 -I "$ROOT/tools/veilleur.py" ;;
+      status|*) systemctl --user is-active "$(veilleur_unit)" >/dev/null 2>&1 && echo "Le veilleur tourne." || echo "Le veilleur ne tourne pas (./dot veilleur install)." ;;
     esac
     ;;
   suivre)
@@ -208,7 +324,8 @@ UNIT
     ;;
   ask|chat|send|secret|livrables)
     # Le canal local : le même que Telegram, depuis la machine. Les secrets vont directement au coffre.
-    DOT_ENGINE_BIN="$ENGINE" DOT_VAULT_NAME="$VAULT" python3 -I "$ROOT/tools/chat.py" "$@"
+    need_dot
+    python3 -I "$ROOT/tools/chat.py" "$@"
     ;;
   journal)
     shift
@@ -219,10 +336,11 @@ UNIT
     $ENGINE logs -f "$NAME"
     ;;
   status)
-    if running "$NAME"; then echo "Le dot tourne ($ENGINE, conteneur $NAME)."; else echo "Le dot ne tourne pas."; fi
-    if running "$VAULT"; then echo "Le coffre tourne."; else echo "Le coffre ne tourne pas."; fi
+    if [ "${2:-}" = "--json" ]; then json_status "$NAME"; echo; exit 0; fi
+    if running "$NAME"; then echo "Le dot « $NAME » tourne ($ENGINE)."; else echo "Le dot « $NAME » ne tourne pas."; fi
+    if running "$VAULT"; then echo "Son coffre tourne."; else echo "Son coffre ne tourne pas."; fi
     ;;
   *)
-    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 esac
