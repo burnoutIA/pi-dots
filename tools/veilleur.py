@@ -58,9 +58,24 @@ def telegram(method: str, params: dict, timeout: int = 30):
         return json.load(r).get("result")
 
 
-def running() -> bool:
+STATE = ROOT / "state" / "memory" / "state.json"
+
+
+def engine_says_running() -> bool:
     out = subprocess.run([ENGINE, "inspect", "-f", "{{.State.Running}}", "dot"], capture_output=True, text=True)
     return out.stdout.strip() == "true"
+
+
+def running() -> bool:
+    """Le dot écrit un signe de vie toutes les 15 s : le lire ne coûte rien, contrairement à lancer
+    podman. On ne demande au moteur qu'en cas de doute (signe de vie ancien)."""
+    try:
+        alive = json.loads(STATE.read_text()).get("lastAlive")
+        if alive and time.time() - datetime.fromisoformat(alive.replace("Z", "+00:00")).timestamp() < 60:
+            return True
+    except Exception:
+        pass
+    return engine_says_running()
 
 
 def dot(action: str):
@@ -94,7 +109,7 @@ def main():
 
         if running():
             offset = 0  # le dot lit lui-même ses messages ; on reprendra à sa suite
-            time.sleep(5)
+            time.sleep(10)
             continue
 
         # Dot éteint : le veilleur écoute Telegram à sa place.
