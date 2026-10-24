@@ -308,7 +308,7 @@ export default function (pi: ExtensionAPI) {
               sendText(msg.chat.id, "Je m'éteins dans quelques secondes. /allumer pour me relancer.");
             }
           } else if (command === "allumer") {
-            sendText(msg.chat.id, "Je suis déjà allumé.");
+            sendText(msg.chat.id, "Je suis allumé, je t'écoute.");
           } else if (command === "pause" || command === "resume") {
             dot.setPaused?.(command === "pause");
             sendText(msg.chat.id, command === "pause" ? "Autonomie en pause : je ne travaille plus de moi-même. Je réponds toujours à vos messages." : "Autonomie reprise.");
