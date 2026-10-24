@@ -1,6 +1,6 @@
 {
-  // Un fichier .dot (./dot export) est un JSON lisible.
+  // Le fichier d'un dot (<nom>.dot) est du YAML : en-tête, env, model, vault.
   "files.associations": {
-    "*.dot": "json"
+    "*.dot": "yaml"
   }
 }
