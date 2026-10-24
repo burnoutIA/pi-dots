@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import { log, pruneLogs } from "./log.ts";
 import { modelUnavailable, retryMinutes } from "./outage.ts";
+import { type Schedule, nextAfter } from "./schedule.ts";
 import { MEMORY, OPEN, type Plan, type Todo, type Work, newId, nextWork, now, objectiveBlock, readPlan, todoLine, updatePlan } from "./plan.ts";
 
 const HOME = process.env.DOT_HOME ?? "/dot";
@@ -54,7 +55,6 @@ interface State {
   backoffUntil?: string;
   modelDown?: { since: string; tries: number; error: string }; // le modèle ne répond plus
 }
-interface Schedule { id: string; prompt: string; every?: number; at?: string; days?: number[]; once?: string; catchUp?: boolean; paused?: boolean; lastRun?: string; nextRun: string }
 interface Watch { id: string; command: string; every: number; prompt: string; paused?: boolean; hash?: string; output?: string; nextCheck: string }
 
 // --- Fichiers ----------------------------------------------------------------------------------
@@ -95,21 +95,6 @@ function since(iso?: string): string {
   if (minutes < 60) return `${minutes} min`;
   if (minutes < 48 * 60) return `${Math.round(minutes / 60)} h`;
   return `${Math.round(minutes / 1440)} j`;
-}
-
-function nextAfter(s: Schedule, from: Date): Date | null {
-  if (s.once) return s.lastRun ? null : new Date(s.once);
-  if (s.every) return new Date(from.getTime() + s.every * 60_000);
-  if (s.at) {
-    const [h, m] = s.at.split(":").map(Number);
-    const candidate = new Date(from);
-    candidate.setHours(h, m, 0, 0);
-    for (let i = 0; i < 8; i += 1) {
-      if (candidate > from && (!s.days?.length || s.days.includes(candidate.getDay()))) return candidate;
-      candidate.setDate(candidate.getDate() + 1);
-    }
-  }
-  return null;
 }
 
 function describeSchedule(s: Schedule): string {

@@ -34,6 +34,9 @@ const INBOX = process.env.VAULT_INBOX ?? "/inbox";
 const PORT = Number(process.env.VAULT_PORT ?? 8080);
 const OWNER = Number(process.env.TELEGRAM_OWNER_ID);
 const TELEGRAM_SECRET = "TELEGRAM_TOKEN";
+// Adresse de l'API Telegram (réglable pour les tests, qui utilisent un faux Telegram).
+const TELEGRAM_API = (process.env.VAULT_TELEGRAM_API ?? "https://api.telegram.org").replace(/\/$/, "");
+const TELEGRAM_HOST = new URL(TELEGRAM_API).hostname;
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PROPFIND", "REPORT"]);
 const NAME = /^[A-Z][A-Z0-9_]*$/;
 
@@ -259,7 +262,7 @@ async function relay(req, res, scheme, rest, search) {
   const address = await resolveAllowed(host, port, named);
   if (!used.size) log("net.out", { method: req.method, host, port, relay: true });
 
-  const isUpdates = host === "api.telegram.org" && target.pathname.endsWith("/getUpdates");
+  const isUpdates = host === TELEGRAM_HOST && target.pathname.endsWith("/getUpdates");
   forward(req, res, target, headers, address, {
     // Toujours relue : la réponse de la personne peut arriver pendant une attente déjà commencée.
     transform: isUpdates ? intercept : undefined,
@@ -277,7 +280,7 @@ let pending = null; // { id, fields: [{ name, label }], index, values, hosts, re
 async function telegram(method, params) {
   const token = vault.secrets[TELEGRAM_SECRET]?.value;
   if (!token || !Number.isInteger(OWNER)) throw new Error("Telegram n'est pas configuré dans le coffre");
-  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+  const res = await fetch(`${TELEGRAM_API}/bot${token}/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(params),
