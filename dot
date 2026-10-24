@@ -5,6 +5,7 @@
 #   ./dot start     lancer le coffre puis le dot (il reprend là où il en était)
 #   ./dot stop      tout arrêter (l'état reste dans state/)
 #   ./dot attach    rejoindre le terminal de pi (Ctrl-b d pour en sortir sans l'arrêter)
+#   ./dot suivre    voir le run en cours, en direct
 #   ./dot chat      parler au dot depuis la machine (ou ./dot ask "message")
 #   ./dot send      lui déposer un fichier · ./dot livrables : ce qu'il a produit pour toi
 #   ./dot secret    répondre à une demande de secret du coffre
@@ -192,6 +193,10 @@ UNIT
       status|*) systemctl --user is-active dot-veilleur.service >/dev/null 2>&1 && echo "Le veilleur tourne." || echo "Le veilleur ne tourne pas (./dot veilleur install)." ;;
     esac
     ;;
+  suivre)
+    # Le run en cours, en direct (lu dans state/channel/live.json) ; Ctrl-C pour quitter.
+    python3 -I "$ROOT/tools/suivre.py"
+    ;;
   ask|chat|send|secret|livrables)
     # Le canal local : le même que Telegram, depuis la machine. Les secrets vont directement au coffre.
     DOT_ENGINE_BIN="$ENGINE" DOT_VAULT_NAME="$VAULT" python3 -I "$ROOT/tools/chat.py" "$@"
@@ -209,6 +214,6 @@ UNIT
     if running "$VAULT"; then echo "Le coffre tourne."; else echo "Le coffre ne tourne pas."; fi
     ;;
   *)
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 esac

@@ -117,3 +117,18 @@ test("loadout : les outils de base restent déclarés ; le différé est report�
   u.setExposure(d, ["watch"], "direct");
   assert.deepEqual(u.readLoadout(d), { mcp__playwright__browser_drag: "deferred" });
 });
+
+test("suivi en direct : appels décrits en clair, étapes et résultat mis en forme", async () => {
+  const { describeCall, render } = await import(`${src}/extensions/dot/live.ts`);
+  assert.equal(describeCall("bash", { command: "ls -la /dot" }), "commande : ls -la /dot");
+  assert.equal(describeCall("read", { path: "/dot/memory/PLAN.md" }), "lit /dot/memory/PLAN.md");
+  assert.equal(describeCall("mcp__ketch__search", { query: "météo Lyon" }), "ketch · search : météo Lyon");
+  const t = new Date().toISOString();
+  const running = render({ status: "running", label: "Objectif · todo", kind: "todo", started: t, turns: 2, tokens: 12000, steps: [{ t, label: "lit a" }, { t, label: "commande : b" }] });
+  assert.match(running, /▶ En cours · Objectif · todo/);
+  assert.match(running, /⏳ .* commande : b/);
+  const done = render({ status: "done", label: "x", kind: "todo", started: t, ended: t, turns: 1, tokens: 0, steps: Array.from({ length: 20 }, (_, i) => ({ t, label: `étape ${i}` })), result: "fini" });
+  assert.match(done, /✅ Terminé/);
+  assert.match(done, /… 8 étape\(s\) plus tôt/);
+  assert.match(done, /→ fini/);
+});

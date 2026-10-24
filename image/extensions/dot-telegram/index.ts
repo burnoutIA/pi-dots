@@ -307,6 +307,7 @@ export default function (pi: ExtensionAPI) {
       return sendText(chat, "Je m'éteins dans quelques secondes. /allumer pour me relancer.");
     }
     if (name === "allumer") return sendText(chat, "Je suis allumé, je t'écoute.");
+    if (name === "suivre") return void follow(chat);
     const command = dot.channelCommands?.().find((c) => c.name === name);
     if (!command) return sendText(chat, `Commande inconnue : /${name}. /aide pour la liste.`);
     if (command.run) {
@@ -321,6 +322,51 @@ export default function (pi: ExtensionAPI) {
     asked = true;
     startTyping();
     pi.sendUserMessage(`/${command.pi} ${args}`.trim(), { expandPromptTemplates: true, deliverAs: "followUp" });
+  }
+
+  // /suivre : un seul message, mis à jour au fil du run (toutes les 4 s au plus, la limite de
+  // Telegram est d'environ une modification par seconde). Sans run en cours, il attend le prochain
+  // pendant 10 minutes. Un nouveau /suivre remplace le précédent.
+  const LIVE = join(HOME, "channel", "live.json");
+  let following = 0;
+  async function follow(chat: number) {
+    const me = ++following;
+    const read = () => {
+      try {
+        return JSON.parse(readFileSync(LIVE, "utf8"));
+      } catch {
+        return null;
+      }
+    };
+    const initial = read();
+    const waitingFor = initial?.status === "running" ? initial.started : null;
+    let shown = waitingFor ? initial.text : "Aucun run en cours. Je te montre le prochain s'il démarre dans les 10 minutes.";
+    let messageId: number;
+    try {
+      messageId = (await tg("sendMessage", { chat_id: chat, text: shown, disable_web_page_preview: true })).message_id;
+    } catch {
+      return;
+    }
+    let started = waitingFor;
+    const deadline = Date.now() + (waitingFor ? 0 : 10 * 60_000);
+    const stopAt = Date.now() + 40 * 60_000;
+    while (me === following && Date.now() < stopAt) {
+      await new Promise((r) => setTimeout(r, 4000));
+      const live = read();
+      if (!started) {
+        if (live?.status === "running") started = live.started;
+        else if (Date.now() > deadline) {
+          await tg("editMessageText", { chat_id: chat, message_id: messageId, text: "Aucun run n'a démarré ces 10 dernières minutes." }).catch(() => {});
+          return;
+        } else continue;
+      }
+      if (!live || live.started !== started) continue;
+      if (live.text !== shown) {
+        shown = live.text;
+        await tg("editMessageText", { chat_id: chat, message_id: messageId, text: shown, disable_web_page_preview: true }).catch(() => {});
+      }
+      if (live.status !== "running") return;
+    }
   }
 
   // --- Entrée : la file du bot, lue en continu ---

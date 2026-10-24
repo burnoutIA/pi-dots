@@ -29,6 +29,7 @@ Il faut docker ou podman. Le script prend celui qui est installé ; on peut forc
 | `./dot livrables` | ce qu'il a produit pour toi |
 | `./dot secret` | répondre à une demande de secret du coffre |
 | `./dot veilleur install` | allumer / éteindre le dot depuis Telegram (voir plus bas) |
+| `./dot suivre` | le run de travail en cours, en direct |
 | `./dot attach` | son terminal pi en direct (`Ctrl-b d` pour en sortir sans l'arrêter) |
 | `./dot shell` | un shell dans son environnement |
 | `./dot journal` | ce qu'il a fait (`-p` problèmes, `-f` en direct, `--runs`, `--reseau`, ou une date) |
@@ -71,6 +72,7 @@ Deux canaux, **une seule conversation** (même mémoire, même plan) : tu peux c
 |---|---|
 | `/aide` | toutes les commandes du moment |
 | `/status`, `/plan` | ce qu'il fait ; ses objectifs et todos |
+| `/suivre` | le run en cours, en direct (sur Telegram : un message mis à jour au fil du run ; s'il n'y a rien en cours, il attend le prochain pendant 10 minutes) |
 | `/journal`, `/problemes` | ce qu'il a fait aujourd'hui ; les problèmes des dernières 24 h |
 | `/doctor`, `/budget` | diagnostic ; budget de contexte |
 | `/livrables`, `/livrable nom` | ses derniers livrables ; en recevoir un (en pièce jointe sur Telegram) |
@@ -78,6 +80,8 @@ Deux canaux, **une seule conversation** (même mémoire, même plan) : tu peux c
 | `/new`, `/allumer`, `/eteindre` | nouvelle conversation ; allumer ou éteindre le dot |
 
 Ces commandes sont instantanées : elles ne passent pas par le modèle. S'y ajoutent **celles que le dot se crée** : chacun de ses skills, et chaque commande déclarée par une extension qu'il s'est écrite, devient une commande (`/nom_du_skill`). Quand il crée, modifie ou supprime un skill ou une extension, il se recharge de lui-même dès qu'il est inactif. La commande apparaît alors (ou disparaît) dans `/aide`, dans `./dot chat` et dans le menu du bot Telegram.
+
+**Le voir travailler** : pendant chaque run de travail, le dot tient un tableau de bord (`state/channel/live.json`) : l'objectif et le todo, la durée, les tours, les jetons, et chaque outil appelé, dit en clair (« commande : … », « lit … », « ketch · search : … »). `./dot suivre` l'affiche en direct dans ton terminal, run après run ; `/suivre` le montre sur Telegram et dans le chat.
 
 **Récupérer son travail** : ce qu'il produit pour toi (rapport, export, document) va dans `state/livrables/`, un dossier que tu ouvres avec ton explorateur de fichiers ou avec `./dot livrables`. Sur Telegram, il te l'envoie aussi en pièce jointe quand c'est utile.
 
@@ -255,6 +259,7 @@ image/vault/                    le coffre : proxy filtré, secrets remplacés au
 image/doctor.mjs                diagnostic, côté dot
 tools/chat.py                   le canal local, côté machine (chat, ask, send, secret, livrables)
 tools/veilleur.py               le veilleur (allumer / éteindre depuis Telegram)
+tools/suivre.py                 le run en cours, en direct
 tools/journal.py                lecture du journal
 tests/                          tests automatiques
 ```

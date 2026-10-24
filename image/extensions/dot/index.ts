@@ -22,6 +22,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { Type } from "typebox";
+import { describeCall, render as renderLive, writeLive } from "./live.ts";
 import { log, pruneLogs } from "./log.ts";
 import { forget, readMemory, remember, skillProblems } from "./memory.ts";
 import { type Exposure, PROTECTED, applyToMcp, declaredTokens, readLoadout, readUsage, record, setExposure, usageFile, uses } from "./usage.ts";
@@ -230,6 +231,9 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
   return new Promise((resolve) => {
     const started = Date.now();
     log("run.start", { ...info });
+    // Le tableau de bord du run, pour ./dot suivre et /suivre.
+    const live: any = { status: "running", label: info.label, kind: info.kind, started: new Date(started).toISOString(), turns: 0, tokens: 0, steps: [] };
+    writeLive(LIVE_FILE, live);
     const child = spawn("pi", ["-p", "--mode", "json", "--session-id", info.session, "--", prompt], {
       cwd: WORKSPACE,
       env: { ...process.env, DOT_ROLE: "worker" },
@@ -244,11 +248,19 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
     let loopStopped = false;
 
     function onEvent(event: any) {
-      if (event.type === "turn_end") stats.turns += 1;
+      if (event.type === "turn_end") {
+        stats.turns += 1;
+        live.turns = stats.turns;
+        writeLive(LIVE_FILE, live);
+      }
       const m = event.type === "message_end" ? event.message : null;
       if (m?.role !== "assistant") return;
       stats.tokensIn += Number(m.usage?.input ?? 0) + Number(m.usage?.cacheRead ?? 0);
       stats.tokensOut += Number(m.usage?.output ?? 0);
+      live.tokens = stats.tokensIn + stats.tokensOut;
+      for (const call of (m.content ?? []).filter((c: any) => c.type === "toolCall")) live.steps.push({ t: new Date().toISOString(), label: describeCall(call.name, call.arguments) });
+      live.steps = live.steps.slice(-60);
+      writeLive(LIVE_FILE, live);
       const t = (m.content ?? []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n").trim();
       if (t) text = t;
       if (m.errorMessage) errors = String(m.errorMessage);
@@ -307,6 +319,8 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
         report: text.slice(0, 300) || undefined,
         modelUnavailable: unavailable || undefined,
       });
+      Object.assign(live, { status: ok ? "done" : "failed", ended: new Date().toISOString(), result: result.slice(0, 400) });
+      writeLive(LIVE_FILE, live);
       resolve({ ok, text: result, unavailable });
     });
   });
@@ -545,7 +559,9 @@ export default function (pi: ExtensionAPI) {
     // 1. Événements
     const event = state.events[0];
     if (event) {
-      const label = `événement (${event.kind})`;
+      // Le titre dit de quoi il s'agit : la 2e ligne de l'événement (la 1re est son en-tête daté).
+      const what = event.text.split("\n")[1]?.replace(/\s+/g, " ").trim().slice(0, 70);
+      const label = `${event.kind}${what ? ` · ${what}` : ""}`;
       changeState((s) => (s.running = { label, since: now() }));
       const result = await runWorker(eventPrompt(event), { label, kind: `event:${event.kind}`, session: "dot-evenements" });
       if (result.unavailable) {
@@ -765,6 +781,17 @@ function problems(): string {
   ].join("\n");
 }
 
+// Le run en cours (ou le dernier), tel que l'affichent /suivre et ./dot suivre.
+export function liveSnapshot(): string {
+  try {
+    const live = JSON.parse(readFileSync(LIVE_FILE, "utf8"));
+    if (live.status !== "running") return `Aucun run en cours. Le dernier :\n\n${renderLive(live)}`;
+    return renderLive(live);
+  } catch {
+    return "Aucun run pour l'instant.";
+  }
+}
+
 function livrables(): string[] {
   if (!existsSync(LIVRABLES)) return [];
   const files: string[] = [];
@@ -807,6 +834,7 @@ function channelCommands(pi: ExtensionAPI): ChannelCommand[] {
       const file = wanted ? livrables().find((f) => relative(LIVRABLES, f).toLowerCase().includes(wanted)) : livrables()[0];
       return Promise.resolve(file ? { text: relative(LIVRABLES, file), files: [file] } : { text: "Livrable introuvable : /livrables pour la liste." });
     } },
+    { name: "suivre", description: "Voir le run en cours, en direct", run: () => text(liveSnapshot()) },
     { name: "pause", description: "Mettre son autonomie en pause", run: () => (shared.setPaused(true), text("Autonomie en pause : je ne travaille plus de moi-même. Je réponds toujours à tes messages.")) },
     { name: "resume", description: "Reprendre son autonomie", run: () => (shared.setPaused(false), text("Autonomie reprise.")) },
   ];
@@ -826,6 +854,7 @@ function channelCommands(pi: ExtensionAPI): ChannelCommand[] {
 // --- Budget de contexte ------------------------------------------------------------------------------
 
 const LOGS_DIR = join(HOME, "logs");
+const LIVE_FILE = join(HOME, "channel", "live.json");
 const MCP_DEFAULTS = "/opt/dot/defaults/mcp.json";
 const MCP_FILE = join(process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent"), "mcp.json");
 
