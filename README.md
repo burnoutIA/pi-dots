@@ -52,7 +52,7 @@ vault:
 - **Garde-fou** : `./dot start` refuse un réglage de `env` qui ressemble à un secret (`…_API_KEY`, `…TOKEN`…), ainsi qu'une clé en clair dans `model`.
 - **Le fichier contient tes secrets en clair** : il est créé lisible par toi seul. Garde-le comme un trousseau de clés.
 
-**Ouvrir un `.dot` d'un double-clic** : `./dot associer` (Linux) associe les fichiers `.dot` à l'application. Un double-clic **lance toujours le dot**, puis fait ce que dit `onclic` : `chat` ouvre la conversation dans un terminal, `none` ne fait rien de plus (une autre application, par exemple, prend la main).
+**Ouvrir un `.dot` d'un double-clic** : `./dot associer` (Linux), à faire une fois à l'installation, associe les fichiers `.dot` à l'application. Un double-clic **lance toujours le dot**, puis fait ce que dit `onclic` : `chat` ouvre la conversation dans un terminal, `none` ne fait rien de plus (une autre application, par exemple, prend la main).
 
 ## Démarrer
 
@@ -96,7 +96,7 @@ Toutes les commandes d'un dot acceptent, en premier argument :
 | `./dot send fichier "…"` | lui déposer un fichier |
 | `./dot livrables` | ce qu'il a produit pour toi |
 | `./dot secret` | répondre à une demande de secret du coffre |
-| `./dot veilleur install` | allumer / éteindre le dot depuis Telegram (voir plus bas) |
+| `./dot veilleur install` | le veilleur : allumer / éteindre les dots depuis Telegram (voir plus bas) |
 | `./dot suivre` | le run de travail en cours, en direct |
 | `./dot attach` | son terminal pi en direct (`Ctrl-b d` pour en sortir sans l'arrêter ; interface `tui`) |
 | `./dot rpc` | connecteur RPC (interface `rpc`) |
@@ -165,11 +165,11 @@ Ces commandes sont instantanées : elles ne passent pas par le modèle. S'y ajou
 
 ### Allumer et éteindre à distance : le veilleur
 
-Un dot éteint ne lit plus rien. Pour `/allumer` depuis Telegram, il faut le **veilleur**, un petit programme qui tourne sur ta machine, hors du dot :
-- dot **éteint** : il écoute Telegram à sa place, rallume le dot sur `/allumer`, et répond « je suis éteint » au reste ;
-- dot **allumé** : il n'écoute pas Telegram (un bot n'a qu'un lecteur, le dot) ; il attend seulement que le dot lui transmette un `/eteindre`.
+Un dot éteint ne lit plus rien. Pour `/allumer` depuis Telegram, il faut le **veilleur**, un petit programme qui tourne sur ta machine, hors des dots. **Un seul veilleur pour tous les dots** : il suit les dots connus de l'application, et pour chacun qui a Telegram :
+- dot **éteint** : il écoute son bot à sa place, le rallume sur `/allumer`, et répond « je suis éteint » au reste ;
+- dot **allumé** : il n'écoute pas son bot (un bot n'a qu'un lecteur, le dot) ; il attend seulement que le dot lui transmette un `/eteindre`.
 
-Il ne fait que lire un petit fichier toutes les 10 secondes : quelques millisecondes de CPU par minute, environ 10 Mo de mémoire.
+Un dot créé ou supprimé est pris en compte dans la minute. Pour chaque dot, il ne fait que lire un petit fichier toutes les 10 secondes : quelques millisecondes de CPU par minute.
 
 ```bash
 ./dot veilleur install     # service de ta session (Linux, systemd) : il démarre avec elle

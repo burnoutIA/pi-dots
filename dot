@@ -12,14 +12,15 @@
 #   ./dot copie dot destination [--vierge]           copier un dot (--vierge : sans sa vie, sans Telegram)
 #   ./dot list [--json]      les dots connus, et lesquels tournent
 #   ./dot use dot            le dot par défaut ;  ./dot remove dot --yes : le supprimer
-#   ./dot associer           ouvrir les fichiers .dot avec cette application (Linux)
+#   ./dot associer           ouvrir les fichiers .dot avec cette application (Linux, à l'installation)
+#   ./dot veilleur install   le veilleur : allumer/éteindre tous les dots depuis Telegram (uninstall, status)
 #   ./dot build              construire l'image (commune à tous les dots)
 #   ./dot test               lancer les tests automatiques
 #
 # Pour un dot (./dot @nom …, ./dot chemin/du/dossier-ou-fichier.dot …, ou le dot par défaut) :
 #   start / stop / open     allumer / éteindre / allumer puis faire ce que dit « onclic » (double-clic)
 #   chat, ask "…", send fichier, livrables, secret, suivre, rpc, attach, shell
-#   doctor, journal, status [--json], logs, veilleur install|uninstall|status
+#   doctor, journal, status [--json], logs
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +31,7 @@ KNOWN="$DATA/known"                                    # lignes « nom<TAB>dossi
 CURRENT="$DATA/courant"
 NET_EXTERNAL=dot-external                              # commun aux coffres : internet et la machine hôte
 PROXY="http://dot-vault:8080"
+VEILLEUR_UNIT=dots-veilleur.service                    # un seul veilleur, pour tous les dots
 mkdir -p "$DATA"; touch "$KNOWN"
 
 if [ -n "${DOT_ENGINE:-}" ]; then ENGINE="$DOT_ENGINE"
@@ -78,7 +80,7 @@ resolve() { # @nom | chemin → dossier
 # --- Le dot visé ----------------------------------------------------------------------------
 TARGET=""
 if [ -n "${1:-}" ] && { [ "${1#@}" != "$1" ] || [ -d "$1" ] || [ "${1%.dot}" != "$1" ]; }; then TARGET="$1"; shift; fi
-GLOBAL=" create copie list use remove associer build test help "
+GLOBAL=" create copie list use remove associer build test help veilleur "
 if [ -z "$TARGET" ] && [[ "$GLOBAL" != *" ${1:-help} "* ]]; then
   if [ -n "${DOT_NAME:-}" ]; then TARGET="@$DOT_NAME"
   elif [ -s "$CURRENT" ]; then TARGET="$(cat "$CURRENT")"
@@ -107,7 +109,6 @@ extract() {
 }
 setting() { grep -E "^$1=" "$RUN/env" 2>/dev/null | tail -1 | cut -d= -f2-; }
 interface_of() { grep -E '^\s*DOT_INTERFACE:' "$(dotfile_of "$1")" 2>/dev/null | head -1 | sed -E 's/^\s*DOT_INTERFACE:\s*"?([a-z]+).*/\1/' || true; }
-veilleur_unit() { echo "$ID-veilleur.service"; }
 
 json_status() { # dossier → objet JSON
   local d="$1" f n id run=false vrun=false iface
@@ -344,8 +345,8 @@ DESKTOP
     else echo "❌ $(basename "$DOTFILE") : $err"; fi
     running "$VAULT" && echo "✅ coffre en marche" || echo "❌ coffre arrêté — ./dot @$NAME start"
     if [ -n "$(setting TELEGRAM_OWNER_ID)" ]; then
-      if systemctl --user is-active "$(veilleur_unit)" >/dev/null 2>&1; then echo "✅ veilleur en marche (allumer/éteindre depuis Telegram)"
-      else echo "⚠️ veilleur arrêté — /allumer et /eteindre ne marchent pas depuis Telegram (./dot @$NAME veilleur install)"; fi
+      if systemctl --user is-active "$VEILLEUR_UNIT" >/dev/null 2>&1; then echo "✅ veilleur en marche (allumer/éteindre depuis Telegram)"
+      else echo "⚠️ veilleur arrêté — /allumer et /eteindre ne marchent pas depuis Telegram (./dot veilleur install)"; fi
     fi
     if running "$ID"; then
       iface="$(interface_of "$DIR")"
@@ -354,23 +355,20 @@ DESKTOP
     else echo "❌ dot arrêté — ./dot @$NAME start"; fi
     ;;
   veilleur)
-    # Le veilleur : allume et éteint le dot depuis Telegram. Service de session (Linux, systemd), un par dot.
-    unit="$HOME/.config/systemd/user/$(veilleur_unit)"
+    # Le veilleur : allume et éteint les dots depuis Telegram. Un seul, pour tous les dots connus.
+    # Service de session (Linux, systemd).
+    unit="$HOME/.config/systemd/user/$VEILLEUR_UNIT"
     case "${2:-status}" in
       install)
         command -v systemctl >/dev/null || { echo "Installation automatique : Linux (systemd) seulement pour l'instant. Sinon : ./dot veilleur run" >&2; exit 1; }
         mkdir -p "$(dirname "$unit")"
         cat > "$unit" <<UNIT
 [Unit]
-Description=Veilleur du dot « $NAME » ($DIR) : l'allumer et l'éteindre depuis Telegram
+Description=Veilleur des dots : les allumer et les éteindre depuis Telegram
 
 [Service]
 ExecStart=$(command -v python3) -I $ROOT/tools/veilleur.py
 Environment=DOT_ENGINE_BIN=$ENGINE
-Environment=DOT_NAME=$NAME
-Environment=DOT_DIR=$DIR
-Environment=DOT_STATE=$STATE
-Environment=DOT_CONTAINER=$ID
 Environment=DOT_CLI=$ROOT/dot
 Environment=PATH=$PATH
 Restart=always
@@ -379,16 +377,16 @@ RestartSec=10
 [Install]
 WantedBy=default.target
 UNIT
-        systemctl --user daemon-reload && systemctl --user enable --now "$(veilleur_unit)"
-        echo "Veilleur du dot « $NAME » installé et lancé : il démarrera avec ta session."
+        systemctl --user daemon-reload && systemctl --user enable --now "$VEILLEUR_UNIT"
+        echo "Veilleur installé et lancé : il veille sur tous les dots connus, et démarrera avec ta session."
         ;;
       uninstall)
-        systemctl --user disable --now "$(veilleur_unit)" 2>/dev/null || true
+        systemctl --user disable --now "$VEILLEUR_UNIT" 2>/dev/null || true
         rm -f "$unit"; systemctl --user daemon-reload 2>/dev/null || true
         echo "Veilleur retiré."
         ;;
-      run) python3 -I "$ROOT/tools/veilleur.py" ;;
-      status|*) systemctl --user is-active "$(veilleur_unit)" >/dev/null 2>&1 && echo "Le veilleur tourne." || echo "Le veilleur ne tourne pas (./dot @$NAME veilleur install)." ;;
+      run) DOT_ENGINE_BIN="$ENGINE" DOT_CLI="$ROOT/dot" python3 -I "$ROOT/tools/veilleur.py" ;;
+      status|*) systemctl --user is-active "$VEILLEUR_UNIT" >/dev/null 2>&1 && echo "Le veilleur tourne." || echo "Le veilleur ne tourne pas (./dot veilleur install)." ;;
     esac
     ;;
   telegram-config)
