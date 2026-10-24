@@ -61,9 +61,23 @@ Les réglages de `.env` (valeurs par défaut entre parenthèses) :
 
 Deux canaux, **une seule conversation** (même mémoire, même plan) : tu peux commencer sur ton téléphone et continuer au terminal. Ses messages spontanés (`notify`) arrivent sur les deux.
 
-**Depuis ta machine** : `./dot chat`, avec les commandes `/status`, `/pause`, `/resume`, `/new`, `/send fichier [message]`, `/secret`, `/livrables`, `/allumer`, `/eteindre`, `/quit`. Si le dot est éteint, `./dot chat` et `./dot ask` proposent de l'allumer. Les messages passent par `state/channel/`.
+**Depuis ta machine** : `./dot chat`. Si le dot est éteint, `./dot chat` et `./dot ask` proposent de l'allumer. Les messages passent par `state/channel/`. En plus des commandes du dot, le chat a les siennes : `/send fichier [message]`, `/secret`, `/allumer`, `/eteindre`, `/quit`.
 
-**Depuis Telegram** : un bot privé, qui n'écoute que toi (`TELEGRAM_OWNER_ID`). Commandes : `/status`, `/pause`, `/resume`, `/new`, `/allumer`, `/eteindre`.
+**Depuis Telegram** : un bot privé, qui n'écoute que toi (`TELEGRAM_OWNER_ID`).
+
+### Les commandes : les mêmes partout, et elles évoluent avec le dot
+
+| Commande | Rôle |
+|---|---|
+| `/aide` | toutes les commandes du moment |
+| `/status`, `/plan` | ce qu'il fait ; ses objectifs et todos |
+| `/journal`, `/problemes` | ce qu'il a fait aujourd'hui ; les problèmes des dernières 24 h |
+| `/doctor`, `/budget` | diagnostic ; budget de contexte |
+| `/livrables`, `/livrable nom` | ses derniers livrables ; en recevoir un (en pièce jointe sur Telegram) |
+| `/pause`, `/resume` | suspendre ou reprendre son autonomie |
+| `/new`, `/allumer`, `/eteindre` | nouvelle conversation ; allumer ou éteindre le dot |
+
+Ces commandes sont instantanées : elles ne passent pas par le modèle. S'y ajoutent **celles que le dot se crée** : chacun de ses skills, et chaque commande déclarée par une extension qu'il s'est écrite, devient une commande (`/nom_du_skill`). Quand il crée, modifie ou supprime un skill ou une extension, il se recharge de lui-même dès qu'il est inactif. La commande apparaît alors (ou disparaît) dans `/aide`, dans `./dot chat` et dans le menu du bot Telegram.
 
 **Récupérer son travail** : ce qu'il produit pour toi (rapport, export, document) va dans `state/livrables/`, un dossier que tu ouvres avec ton explorateur de fichiers ou avec `./dot livrables`. Sur Telegram, il te l'envoie aussi en pièce jointe quand c'est utile.
 

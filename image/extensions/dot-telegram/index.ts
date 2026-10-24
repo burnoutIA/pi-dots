@@ -87,7 +87,11 @@ function releaseLock() {
 
 // Survit au remplacement de session (/new recharge l'extension, pas le processus).
 const shared = ((globalThis as any).__dotTelegram ??= { offset: 0, chat: 0 }) as { offset: number; chat: number };
-const dot = ((globalThis as any).__dot ??= {}) as { senders?: Record<string, (text: string) => void>; setPaused?: (p: boolean) => void; status?: () => string };
+const dot = ((globalThis as any).__dot ??= {}) as {
+  senders?: Record<string, (text: string) => void>;
+  channelCommands?: () => { name: string; description: string; run?: (args: string) => Promise<{ text: string; files?: string[] }>; pi?: string }[];
+  reply?: (text: string) => void;
+};
 
 function assistantText(m: any): string {
   if (m?.role !== "assistant") return "";
@@ -209,6 +213,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", () => {
     stopTyping();
     if (asked) sendText(chatId(), lastTurnText || "Je n'ai pas pu répondre. Le détail est dans le terminal du dot.");
+    dot.reply = undefined;
     lastTurnText = "";
     asked = false;
   });
@@ -264,54 +269,75 @@ export default function (pi: ExtensionAPI) {
     return msg.chat.type === "private" ? msg.chat.id === OWNER : msg.from?.id === OWNER;
   }
 
-  const COMMANDS = [
+  // Le menu du bot : les commandes du canal, puis le registre du dot (ses commandes instantanées,
+  // et celles des skills et extensions qu'il s'est écrits). Recalculé régulièrement : une commande
+  // que le dot vient de se créer y apparaît d'elle-même.
+  const CHANNEL_ONLY = [
     { command: "new", description: "Nouvelle conversation" },
-    { command: "status", description: "Ce que fait le dot : tâches, veilles, autonomie" },
-    { command: "pause", description: "Mettre l'autonomie en pause" },
-    { command: "resume", description: "Reprendre l'autonomie" },
     { command: "eteindre", description: "Éteindre le dot (le veilleur le rallume avec /allumer)" },
     { command: "allumer", description: "Allumer le dot (quand il est éteint)" },
   ];
+  function menu() {
+    const registry = (dot.channelCommands?.() ?? []).map((c) => ({ command: c.name, description: c.description.length >= 3 ? c.description.slice(0, 256) : "commande" }));
+    return [...registry, ...CHANNEL_ONLY].slice(0, 100);
+  }
+  let menuPrint = "";
+  let menuCheck = 0;
+  async function refreshMenu(signal: AbortSignal) {
+    if (Date.now() - menuCheck < 60_000) return;
+    menuCheck = Date.now();
+    const commands = menu();
+    const print = JSON.stringify(commands);
+    if (print === menuPrint) return;
+    await tg("setMyCommands", { commands }, signal).then(() => (menuPrint = print)).catch(() => {});
+  }
+
+  async function runCommand(chat: number, name: string, args: string) {
+    if (name === "start") return sendText(chat, "Bonjour. Écris-moi. /aide pour toutes les commandes.");
+    if (name === "new") return pi.sendUserMessage(`/${NEW_COMMAND}`, { expandPromptTemplates: true });
+    if (name === "eteindre") {
+      // Le dot ne s'arrête pas lui-même (coffre compris) : il le demande au veilleur, sur la machine.
+      let alive = false;
+      try {
+        alive = Date.now() - new Date(JSON.parse(readFileSync(join(HOME, "channel", "veilleur.json"), "utf8")).t).getTime() < 60_000;
+      } catch {}
+      if (!alive) return sendText(chat, "Je ne peux pas m'éteindre d'ici : le veilleur ne tourne pas sur ta machine (./dot veilleur install).");
+      mkdirSync(join(HOME, "channel"), { recursive: true });
+      writeFileSync(join(HOME, "channel", "power.json"), JSON.stringify({ action: "stop", t: new Date().toISOString() }));
+      return sendText(chat, "Je m'éteins dans quelques secondes. /allumer pour me relancer.");
+    }
+    if (name === "allumer") return sendText(chat, "Je suis allumé, je t'écoute.");
+    const command = dot.channelCommands?.().find((c) => c.name === name);
+    if (!command) return sendText(chat, `Commande inconnue : /${name}. /aide pour la liste.`);
+    if (command.run) {
+      const result = await command.run(args);
+      sendText(chat, result.text);
+      for (const file of result.files ?? []) await deliver(file).catch((e: any) => sendText(chat, `Envoi impossible : ${e.message}`));
+      return;
+    }
+    // Une commande d'une extension ou d'un skill du dot : transmise à pi. Une extension peut répondre
+    // directement à la personne avec globalThis.__dot.reply(texte).
+    dot.reply = (text: string) => sendText(chat, text);
+    asked = true;
+    startTyping();
+    pi.sendUserMessage(`/${command.pi} ${args}`.trim(), { expandPromptTemplates: true, deliverAs: "followUp" });
+  }
 
   // --- Entrée : la file du bot, lue en continu ---
-  let stop: AbortController | null = null;
   let lastConflict = 0;
   async function poll(signal: AbortSignal) {
-    await tg("setMyCommands", { commands: COMMANDS }, signal).catch(() => {});
     while (!signal.aborted) {
       try {
+        await refreshMenu(signal);
         const updates: any[] = await tg("getUpdates", { offset: shared.offset, timeout: 50, allowed_updates: ["message"] }, signal);
         for (const update of updates) {
           shared.offset = update.update_id + 1;
           const msg = update.message;
           if (!allowed(msg)) continue;
           shared.chat = msg.chat.id;
-          const command = /^\/(\w+)(?:@\w+)?\s*$/.exec(String(msg.text ?? "").trim())?.[1];
-          if (command === "start") {
-            sendText(msg.chat.id, "Bonjour. Écrivez-moi. /status pour voir ce que je fais, /new pour une nouvelle conversation.");
-          } else if (command === "new") {
-            pi.sendUserMessage(`/${NEW_COMMAND}`, { expandPromptTemplates: true });
-          } else if (command === "status") {
-            sendText(msg.chat.id, dot.status?.() ?? "État indisponible.");
-          } else if (command === "eteindre") {
-            // Le dot ne s'arrête pas lui-même (coffre compris) : il le demande au veilleur, sur la machine.
-            const watcher = join(HOME, "channel", "veilleur.json");
-            let alive = false;
-            try {
-              alive = Date.now() - new Date(JSON.parse(readFileSync(watcher, "utf8")).t).getTime() < 60_000;
-            } catch {}
-            if (!alive) {
-              sendText(msg.chat.id, "Je ne peux pas m'éteindre d'ici : le veilleur ne tourne pas sur ta machine (./dot veilleur install).");
-            } else {
-              mkdirSync(join(HOME, "channel"), { recursive: true });
-              writeFileSync(join(HOME, "channel", "power.json"), JSON.stringify({ action: "stop", t: new Date().toISOString() }));
-              sendText(msg.chat.id, "Je m'éteins dans quelques secondes. /allumer pour me relancer.");
-            }
-          } else if (command === "allumer") {
-            sendText(msg.chat.id, "Je suis allumé, je t'écoute.");
-          } else if (command === "pause" || command === "resume") {
-            dot.setPaused?.(command === "pause");
-            sendText(msg.chat.id, command === "pause" ? "Autonomie en pause : je ne travaille plus de moi-même. Je réponds toujours à vos messages." : "Autonomie reprise.");
+          const slash = /^\/([\w-]+)(?:@\w+)?(?:\s+([\s\S]*))?$/.exec(String(msg.text ?? "").trim());
+          if (slash && !attachmentOf(msg)) {
+            await runCommand(msg.chat.id, slash[1].toLowerCase(), (slash[2] ?? "").trim());
           } else {
             startTyping();
             const content = await contentOf(msg, signal);
@@ -332,11 +358,15 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // Un seul lecteur par processus, même après un rechargement des extensions (/dot-reload) :
+  // l'ancien est arrêté avant de lancer le nouveau.
+  let stop: AbortController | null = null;
   pi.on("session_start", (_event, ctx: any) => {
     vision = sees(ctx?.model);
     if (stop) return;
     if (!takeLock()) return ctx.ui.notify("Telegram : ce bot est déjà suivi par un autre pi.", "warning");
-    stop = new AbortController();
+    (shared as any).poller?.abort();
+    stop = (shared as any).poller = new AbortController();
     void poll(stop.signal);
   });
   pi.on("session_shutdown", () => {

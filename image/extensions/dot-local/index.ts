@@ -19,7 +19,11 @@ const NOTIFICATIONS = join(CHANNEL, "notifications.jsonl");
 const NEW_COMMAND = "local-new";
 const WORKER = process.env.DOT_ROLE === "worker";
 
-const dot = ((globalThis as any).__dot ??= {}) as { senders?: Record<string, (text: string) => void>; setPaused?: (p: boolean) => void; status?: () => string };
+const dot = ((globalThis as any).__dot ??= {}) as {
+  senders?: Record<string, (text: string) => void>;
+  channelCommands?: () => { name: string; description: string; run?: (args: string) => Promise<{ text: string; files?: string[] }>; pi?: string }[];
+  reply?: (text: string) => void;
+};
 
 function writeOut(id: string, reply: string) {
   mkdirSync(OUT, { recursive: true });
@@ -62,15 +66,23 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  function handle(id: string, msg: any) {
-    const command = String(msg.command ?? "").replace(/^\//, "");
-    if (command === "status") return writeOut(id, dot.status?.() ?? "État indisponible.");
-    if (command === "pause" || command === "resume") {
-      dot.setPaused?.(command === "pause");
-      return writeOut(id, command === "pause" ? "Autonomie en pause : je ne travaille plus de moi-même. Je réponds toujours à tes messages." : "Autonomie reprise.");
+  // Les commandes viennent du même registre que Telegram : celles du dot, et celles des skills et
+  // extensions qu'il s'est écrits (mis à jour quand il en crée).
+  async function handle(id: string, msg: any) {
+    const [, name = "", args = ""] = /^\/?([\w-]+)\s*([\s\S]*)$/.exec(String(msg.command ?? "").trim()) ?? [];
+    if (msg.command) {
+      if (name === "new") return pi.sendUserMessage(`/${NEW_COMMAND} ${id}`, { expandPromptTemplates: true });
+      const command = dot.channelCommands?.().find((c) => c.name === name.toLowerCase());
+      if (!command) return writeOut(id, `Commande inconnue : /${name}. /aide pour la liste.`);
+      if (command.run) {
+        const result = await command.run(args.trim());
+        const files = (result.files ?? []).map((f) => `→ ${f.replace(/^\/dot\//, "state/")}`);
+        return writeOut(id, [result.text, ...files].join("\n"));
+      }
+      waiting.push(id);
+      dot.reply = (text: string) => dot.senders?.local?.(text); // s'affiche dans ./dot chat
+      return pi.sendUserMessage(`/${command.pi} ${args}`.trim(), { expandPromptTemplates: true, deliverAs: "followUp" });
     }
-    if (command === "new") return pi.sendUserMessage(`/${NEW_COMMAND} ${id}`, { expandPromptTemplates: true });
-    if (command) return writeOut(id, `Commande inconnue : /${command}`);
     const text = String(msg.text ?? "").trim();
     if (!text) return writeOut(id, "Message vide.");
     waiting.push(id);
@@ -78,6 +90,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   let timer: ReturnType<typeof setInterval> | null = null;
+  const global = dot as any;
   function poll() {
     if (!existsSync(IN)) return;
     for (const name of readdirSync(IN).sort()) {
@@ -89,7 +102,7 @@ export default function (pi: ExtensionAPI) {
         msg = JSON.parse(readFileSync(file, "utf8"));
       } catch {}
       rmSync(file, { force: true });
-      if (msg) handle(String(msg.id ?? name.replace(/\.json$/, "")), msg);
+      if (msg) void handle(String(msg.id ?? name.replace(/\.json$/, "")), msg).catch((e) => writeOut(String(msg.id), `Erreur : ${e.message}`));
     }
   }
 
@@ -105,7 +118,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", () => {
     mkdirSync(IN, { recursive: true });
-    if (!timer) timer = setInterval(poll, 1000);
+    // Une seule lecture par processus, même après un rechargement des extensions.
+    if (global.localTimer) clearInterval(global.localTimer);
+    timer = global.localTimer = setInterval(poll, 1000);
   });
   pi.on("session_shutdown", () => {
     if (timer) clearInterval(timer);

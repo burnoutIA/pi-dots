@@ -203,7 +203,7 @@ def cmd_livrables(_args):
 
 def cmd_chat(_args):
     ensure_running()
-    say("Conversation avec le dot. /status /pause /resume /new /send fichier [message] /secret /livrables /allumer /eteindre /quit")
+    say("Conversation avec le dot. /aide pour ses commandes ; ici aussi : /send fichier [message] /secret /livrables /allumer /eteindre /quit")
     stop = threading.Event()
     waiting: list[str] = []
     busy = threading.Event()  # une saisie de secret est en cours
@@ -254,8 +254,9 @@ def cmd_chat(_args):
                 parts = line.split(maxsplit=2)
                 waiting.append(send_file(parts[1], parts[2] if len(parts) > 2 else ""))
                 continue
-            if line.split()[0] in ("/status", "/pause", "/resume", "/new"):
-                waiting.append(post({"command": line.split()[0]}))
+            if line.startswith("/"):
+                # Toutes les autres commandes vont au dot : les siennes et celles de ses skills (/aide).
+                waiting.append(post({"command": line}))
                 continue
             waiting.append(post({"text": line}))
     except (EOFError, KeyboardInterrupt):
