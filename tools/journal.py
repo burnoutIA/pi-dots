@@ -140,6 +140,9 @@ def describe(e) -> str:
         "environment.stop": "● environnement arrêté",
         "conversation.stop": "● conversation arrêtée",
         "vault.stop": "● coffre arrêté",
+        "watcher.start": "● veilleur démarré",
+        "watcher.stop": "⏻ dot éteint à distance (/eteindre)",
+        "watcher.start_dot": "⏻ dot allumé à distance (/allumer)",
         "autonomy.pause": "⏸ autonomie en pause",
         "autonomy.resume": "▶ autonomie reprise",
     }

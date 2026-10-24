@@ -283,7 +283,7 @@ async function relay(req, res, scheme, rest, search) {
 let pending = null; // { id, type, fields, index, values, hosts, readOnly, purpose, names, created }
 const PENDING_MINUTES = Number(process.env.VAULT_PENDING_MINUTES ?? 30);
 // Commandes du bot qui ne sont jamais prises pour une réponse : elles vont au dot.
-const BOT_COMMAND = /^\/(status|new|pause|resume|start)\b/i;
+const BOT_COMMAND = /^\/(status|new|pause|resume|start|eteindre|allumer)\b/i;
 
 async function telegram(method, params) {
   const token = vault.secrets[TELEGRAM_SECRET]?.value;

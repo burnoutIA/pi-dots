@@ -2,7 +2,7 @@
 """Parler au dot depuis la machine : le même canal que Telegram, sans Telegram.
 
   ./dot ask "message"          une question, la réponse s'affiche
-  ./dot chat                   une conversation au clavier (/status /pause /resume /new /send /quit)
+  ./dot chat                   une conversation au clavier (/status /pause /resume /new /send /allumer /eteindre /quit)
   ./dot send fichier [message] déposer un fichier au dot
   ./dot secret                 répondre à une demande de secret du coffre
   ./dot livrables              ce que le dot a produit pour toi
@@ -139,10 +139,26 @@ def wait_reply(msg_id: str, timeout: int = 1800, interactive_secrets: bool = Tru
     return "(pas de réponse : le dot est-il démarré ? ./dot status)"
 
 
-def ensure_running():
+def running() -> bool:
     out = subprocess.run([ENGINE, "inspect", "-f", "{{.State.Running}}", "dot"], capture_output=True, text=True)
-    if out.stdout.strip() != "true":
-        sys.exit("Le dot ne tourne pas : ./dot start")
+    return out.stdout.strip() == "true"
+
+
+def power(action: str):
+    """./dot start ou ./dot stop, depuis le chat."""
+    subprocess.run([str(ROOT / "dot"), action])
+
+
+def ensure_running(ask: bool = True):
+    if running():
+        return
+    if ask and sys.stdin.isatty():
+        if input("Le dot est éteint. Je l'allume ? [O/n] ").strip().lower() in ("n", "non", "no"):
+            sys.exit(0)
+    else:
+        say("Le dot était éteint : je l'allume.")
+    power("start")
+    time.sleep(10)  # le temps que pi démarre et lise ses messages
 
 
 def send_file(path: str, text: str = "") -> str:
@@ -160,9 +176,9 @@ def send_file(path: str, text: str = "") -> str:
 # --- Commandes ---
 
 def cmd_ask(args):
-    ensure_running()
     if not args:
         sys.exit('Usage : ./dot ask "message"')
+    ensure_running(ask=False)
     say(wait_reply(post({"text": " ".join(args)})))
 
 
@@ -187,7 +203,7 @@ def cmd_livrables(_args):
 
 def cmd_chat(_args):
     ensure_running()
-    say("Conversation avec le dot. /status /pause /resume /new /send fichier [message] /secret /livrables /quit")
+    say("Conversation avec le dot. /status /pause /resume /new /send fichier [message] /secret /livrables /allumer /eteindre /quit")
     stop = threading.Event()
     waiting: list[str] = []
     busy = threading.Event()  # une saisie de secret est en cours
@@ -221,6 +237,18 @@ def cmd_chat(_args):
                 continue
             if line == "/livrables":
                 cmd_livrables([])
+                continue
+            if line == "/eteindre":
+                power("stop")
+                continue
+            if line == "/allumer":
+                if running():
+                    say("Le dot est déjà allumé.")
+                else:
+                    power("start")
+                continue
+            if not running():
+                say("Le dot est éteint : /allumer pour le relancer.")
                 continue
             if line.startswith("/send "):
                 parts = line.split(maxsplit=2)

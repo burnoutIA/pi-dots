@@ -269,6 +269,8 @@ export default function (pi: ExtensionAPI) {
     { command: "status", description: "Ce que fait le dot : tâches, veilles, autonomie" },
     { command: "pause", description: "Mettre l'autonomie en pause" },
     { command: "resume", description: "Reprendre l'autonomie" },
+    { command: "eteindre", description: "Éteindre le dot (le veilleur le rallume avec /allumer)" },
+    { command: "allumer", description: "Allumer le dot (quand il est éteint)" },
   ];
 
   // --- Entrée : la file du bot, lue en continu ---
@@ -291,6 +293,22 @@ export default function (pi: ExtensionAPI) {
             pi.sendUserMessage(`/${NEW_COMMAND}`, { expandPromptTemplates: true });
           } else if (command === "status") {
             sendText(msg.chat.id, dot.status?.() ?? "État indisponible.");
+          } else if (command === "eteindre") {
+            // Le dot ne s'arrête pas lui-même (coffre compris) : il le demande au veilleur, sur la machine.
+            const watcher = join(HOME, "channel", "veilleur.json");
+            let alive = false;
+            try {
+              alive = Date.now() - new Date(JSON.parse(readFileSync(watcher, "utf8")).t).getTime() < 60_000;
+            } catch {}
+            if (!alive) {
+              sendText(msg.chat.id, "Je ne peux pas m'éteindre d'ici : le veilleur ne tourne pas sur ta machine (./dot veilleur install).");
+            } else {
+              mkdirSync(join(HOME, "channel"), { recursive: true });
+              writeFileSync(join(HOME, "channel", "power.json"), JSON.stringify({ action: "stop", t: new Date().toISOString() }));
+              sendText(msg.chat.id, "Je m'éteins dans quelques secondes. /allumer pour me relancer.");
+            }
+          } else if (command === "allumer") {
+            sendText(msg.chat.id, "Je suis déjà allumé.");
           } else if (command === "pause" || command === "resume") {
             dot.setPaused?.(command === "pause");
             sendText(msg.chat.id, command === "pause" ? "Autonomie en pause : je ne travaille plus de moi-même. Je réponds toujours à vos messages." : "Autonomie reprise.");

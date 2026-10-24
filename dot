@@ -8,6 +8,7 @@
 #   ./dot chat      parler au dot depuis la machine (ou ./dot ask "message")
 #   ./dot send      lui déposer un fichier · ./dot livrables : ce qu'il a produit pour toi
 #   ./dot secret    répondre à une demande de secret du coffre
+#   ./dot veilleur  install | uninstall | status : allumer/éteindre le dot depuis Telegram
 #   ./dot shell     un shell dans l'environnement
 #   ./dot doctor    diagnostic complet (machine, coffre, modèle, Telegram, battement…)
 #   ./dot test      lancer les tests automatiques
@@ -146,6 +147,8 @@ case "${1:-}" in
     for f in .env config/vault.json; do [ -f "$ROOT/$f" ] && echo "✅ $f présent" || echo "❌ $f absent"; done
     (check_secrets 2>&1 >/dev/null && echo "✅ aucun secret visible du dot") || echo "❌ un secret est visible du dot (voir ./dot start)"
     running "$VAULT" && echo "✅ coffre en marche" || echo "❌ coffre arrêté — ./dot start"
+    if systemctl --user is-active dot-veilleur.service >/dev/null 2>&1; then echo "✅ veilleur en marche (allumer/éteindre depuis Telegram)"
+    else echo "⚠️ veilleur arrêté — /allumer et /eteindre ne marchent pas depuis Telegram (./dot veilleur install)"; fi
     if running "$NAME"; then
       echo "✅ dot en marche"; echo; echo "Intérieur du dot :"
       $ENGINE exec "$NAME" node /opt/dot/doctor.mjs
@@ -155,6 +158,39 @@ case "${1:-}" in
     # Les tests tournent dans l'image (Node 24), sur le code du dépôt tel qu'il est : pas besoin de reconstruire.
     $ENGINE image inspect "$IMAGE" >/dev/null 2>&1 || $ENGINE build -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT"
     $ENGINE run --rm -v "$ROOT/image:/src:ro" -v "$ROOT/tests:/tests:ro" --entrypoint node "$IMAGE" --test "/tests/*.test.*"
+    ;;
+  veilleur)
+    # Le veilleur : allume et éteint le dot depuis Telegram. Service de session (Linux, systemd).
+    unit="$HOME/.config/systemd/user/dot-veilleur.service"
+    case "${2:-status}" in
+      install)
+        command -v systemctl >/dev/null || { echo "Installation automatique : Linux (systemd) seulement pour l'instant. Sinon : ./dot veilleur run" >&2; exit 1; }
+        mkdir -p "$(dirname "$unit")"
+        cat > "$unit" <<UNIT
+[Unit]
+Description=Veilleur du dot : allumer et éteindre le dot depuis Telegram
+
+[Service]
+ExecStart=$(command -v python3) -I $ROOT/tools/veilleur.py
+Environment=DOT_ENGINE_BIN=$ENGINE
+Environment=PATH=$PATH
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+UNIT
+        systemctl --user daemon-reload && systemctl --user enable --now dot-veilleur.service
+        echo "Veilleur installé et lancé : il démarrera avec ta session."
+        ;;
+      uninstall)
+        systemctl --user disable --now dot-veilleur.service 2>/dev/null || true
+        rm -f "$unit"; systemctl --user daemon-reload 2>/dev/null || true
+        echo "Veilleur retiré."
+        ;;
+      run) DOT_ENGINE_BIN="$ENGINE" python3 -I "$ROOT/tools/veilleur.py" ;;
+      status|*) systemctl --user is-active dot-veilleur.service >/dev/null 2>&1 && echo "Le veilleur tourne." || echo "Le veilleur ne tourne pas (./dot veilleur install)." ;;
+    esac
     ;;
   ask|chat|send|secret|livrables)
     # Le canal local : le même que Telegram, depuis la machine. Les secrets vont directement au coffre.
@@ -173,6 +209,6 @@ case "${1:-}" in
     if running "$VAULT"; then echo "Le coffre tourne."; else echo "Le coffre ne tourne pas."; fi
     ;;
   *)
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 esac

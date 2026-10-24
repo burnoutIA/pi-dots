@@ -162,6 +162,18 @@ Le canal local fait tout ce que fait Telegram, sans Telegram :
 - **Messages et fichiers** passent par `state/channel/`. Ce qu'il produit pour toi va dans `state/livrables/`, un dossier que tu ouvres aussi avec ton explorateur de fichiers.
 - **Les secrets ne passent jamais par `state/`** : `./dot chat` et `./dot secret` les remettent directement au coffre, par une porte d'administration qui n'écoute qu'à l'intérieur de son conteneur (le dot ne peut pas la joindre). La saisie ne s'affiche pas. Une demande apparaît sur Telegram et sur ta machine, et la première réponse l'emporte. Telegram est donc facultatif.
 
+## Allumer et éteindre
+
+- **Depuis ta machine** : `./dot start` et `./dot stop`, ou `/allumer` et `/eteindre` dans `./dot chat`. `./dot chat` et `./dot ask` proposent aussi d'allumer le dot s'il est éteint.
+- **Depuis Telegram** : `/eteindre` et `/allumer`. Un dot éteint ne lit plus rien : c'est le **veilleur**, un petit programme sur ta machine hors du dot, qui écoute Telegram à sa place quand le dot est éteint et le rallume sur `/allumer`. Quand le dot tourne, le veilleur n'écoute pas Telegram (un bot n'a qu'un lecteur). Il s'installe comme un service de ta session (Linux, systemd) :
+
+```bash
+./dot veilleur install     # lancé avec ta session
+./dot veilleur status
+./dot veilleur uninstall
+./dot veilleur run         # au premier plan, sans l'installer
+```
+
 ## Telegram
 
 - Ta réponse arrive quand c'est toi qui écris ; le reste du temps, le dot ne t'écrit qu'avec `notify`.
