@@ -10,6 +10,8 @@ const AGENT = process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent");
 const MEMORY = join(HOME, "memory");
 const VAULT = (process.env.DOT_VAULT ?? "http://dot-vault:8080").replace(/\/$/, "");
 const RUN_MINUTES = Number(process.env.DOT_RUN_MINUTES || 30);
+// Période du bilan des problèmes du journal : --days N (1 par défaut).
+const DAYS = Math.max(1, Number(process.argv[process.argv.indexOf("--days") + 1]) || 1);
 
 const results = [];
 const ok = (what, detail = "") => results.push(["✅", what, detail]);
@@ -131,10 +133,10 @@ try {
 
 // --- Le journal : les problèmes des dernières 24 h ---
 const PROBLEMS = { "loop.suspect": "boucles", "todo.stuck": "todos bloqués", "model.down": "pannes du modèle", "pi.exit": "arrêts de pi", "net.denied": "refus du coffre", "heartbeat.error": "erreurs du battement", "notify.blocked": "messages bloqués", "telegram.conflict": "conflits Telegram (un autre programme lit le bot)", "oauth.error": "jetons non renouvelés" };
-const since = Date.now() - 24 * 3600_000;
+const since = Date.now() - DAYS * 24 * 3600_000;
 const counts = {};
 try {
-  for (const f of readdirSync(join(HOME, "logs")).filter((f) => f.endsWith(".jsonl")).sort().slice(-2)) {
+  for (const f of readdirSync(join(HOME, "logs")).filter((f) => f.endsWith(".jsonl")).sort().slice(-(DAYS + 1))) {
     for (const line of readFileSync(join(HOME, "logs", f), "utf8").split("\n")) {
       if (!line) continue;
       try {
@@ -146,7 +148,8 @@ try {
   }
 } catch {}
 const summary = Object.entries(counts).map(([k, n]) => `${n} ${PROBLEMS[k] ?? "runs en échec"}`);
-summary.length ? warn("journal, dernières 24 h", summary.join(" · ")) : ok("journal, dernières 24 h", "aucun problème");
+const period = DAYS === 1 ? "dernières 24 h" : `${DAYS} derniers jours`;
+summary.length ? warn(`journal, ${period}`, summary.join(" · ")) : ok(`journal, ${period}`, "aucun problème");
 
 // --- Sortie ---
 for (const [icon, what, detail] of results) console.log(`${icon} ${what}${detail ? ` — ${detail}` : ""}`);

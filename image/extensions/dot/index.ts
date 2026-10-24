@@ -183,7 +183,7 @@ function planPrompt(plan: Plan, work: Extract<Work, { kind: "plan" }>): string {
     objectiveBlock(plan, objective),
     "",
     "Décide :",
-    "- s'il est atteint : `objective` reached, avec le résultat ;",
+    "- s'il est atteint : `objective` reached, avec le résultat ; note avec `remember` ce qui servira plus tard (comment c'est fait, ce que la personne a décidé), et demande-lui son avis en une question courte dans ton `notify` (« c'est utile ? quelque chose à changer ? ») ;",
     "- sinon : fais le plan des prochaines étapes avec `todo` add (petites, concrètes, vérifiables). Ne les exécute pas maintenant ;",
     "- si rien n'est possible pour l'instant : ne change rien et explique pourquoi en une ligne.",
   ].join("\n");
@@ -436,11 +436,13 @@ export default function (pi: ExtensionAPI) {
       "revue",
       [
         `[dot:revue] ${stamp()}`,
-        "Revue de ton budget de contexte. Lance `budget` show, puis :",
-        "- passe en `deferred` les outils déclarés lourds et peu utilisés ces 30 jours ; remets en `direct` ceux que tu as dû chercher souvent ;",
-        "- allège tes skills trop longs (l'essentiel dans SKILL.md, les détails dans des fichiers à part) et ceux que tu n'utilises plus, supprime-les ;",
-        "- note avec `remember` ce que tu as changé et pourquoi.",
-        "Ne préviens la personne que si tu as changé quelque chose qui la concerne.",
+        `Ton bilan des ${REVIEW_DAYS} derniers jours, pour t'améliorer. Dans l'ordre :`,
+        "1. Avant/après : relis ta mémoire. Pour chaque changement noté à ta revue précédente, regarde s'il a tenu ses promesses (moins de jetons, moins d'échecs, un retour positif). Sinon, reviens dessus.",
+        `2. Échecs : lance \`doctor\` avec days=${REVIEW_DAYS}, puis regarde dans /dot/logs ce qui s'est mal passé (boucles, todos bloqués, runs en échec, refus du coffre). Corrige la cause : le skill, le script ou la méthode en question.`,
+        "3. Retours de la personne : relis ce qu'elle t'a dit de ton travail (ta mémoire, ta conversation). Tiens-en compte.",
+        "4. Budget : lance `budget` show. Passe en `deferred` les outils lourds et peu utilisés, remets en `direct` ceux que tu as dû recharger souvent. Allège les skills trop longs, supprime ceux qui ne servent plus.",
+        "5. Note avec `remember` chaque changement, avec la mesure de départ (ex. « 24/10 : skill X allégé, 60k jetons par run avant »), pour pouvoir comparer à la prochaine revue.",
+        "Ne préviens la personne que si tu as changé quelque chose qui la concerne, ou si tu as besoin de son avis.",
       ].join("\n"),
     );
   }
@@ -855,12 +857,13 @@ function registerTools(pi: ExtensionAPI) {
     label: "doctor",
     description:
       "Check your own health, link by link: vault, internet, model, Telegram, heartbeat, plan, skills, memory, resources, and the problems logged in the last 24 hours. " +
-      "Use it when something does not work as expected, before guessing.",
+      "Use it when something does not work as expected, before guessing. `days` widens the review of logged problems (default 1).",
     promptSnippet: "doctor: diagnose your environment (vault, model, Telegram, heartbeat, skills, resources, recent problems)",
-    parameters: Type.Object({}),
-    async execute() {
+    parameters: Type.Object({ days: Type.Optional(Type.Number({ description: "How many days of logged problems to count (default 1)" })) }),
+    async execute(_id: string, args: any) {
+      const days = String(Math.max(1, Math.min(60, Number(args.days) || 1)));
       const output = await new Promise<string>((resolve) =>
-        execFile("node", ["/opt/dot/doctor.mjs"], { timeout: 60_000 }, (error, stdout, stderr) => resolve(`${stdout}${stderr}`.trim() || String(error?.message ?? ""))),
+        execFile("node", ["/opt/dot/doctor.mjs", "--days", days], { timeout: 60_000 }, (error, stdout, stderr) => resolve(`${stdout}${stderr}`.trim() || String(error?.message ?? ""))),
       );
       return answer(output || "doctor: no output");
     },

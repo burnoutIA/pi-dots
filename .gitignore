@@ -8,3 +8,6 @@ state/
 
 # Fichiers générés
 __pycache__/
+
+# Notes de travail personnelles
+roadmap.md
