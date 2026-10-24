@@ -16,7 +16,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 LOGS = Path(__file__).resolve().parent.parent / "state" / "logs"
-PROBLEMS = {"loop.suspect", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error"}
+PROBLEMS = {"notify.blocked", "model.down", "model.up", "loop.suspect", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error"}
 
 
 def hour(iso: str) -> str:
@@ -58,11 +58,13 @@ def describe(e) -> str:
                 f"{e.get('toolCalls', 0)} outils ({tools(e)}) · {round((e.get('tokensIn', 0) + e.get('tokensOut', 0)) / 1000)}k jetons")
         if e.get("maxRepeat", 0) >= 3:
             line += f" · même appel répété {e['maxRepeat']}×"
-        if e.get("error"):
+        if e.get("modelUnavailable"):
+            line += " · modèle injoignable (non compté)"
+        elif e.get("error"):
             line += f"\n           erreur : {e['error'][:300]}"
         return line
     if t == "loop.suspect":
-        return f"⚠ BOUCLE PROBABLE après {duration(e.get('sinceStartS'))} : {e.get('call')} répété {e.get('repeat')}× · {short(e.get('label'), 60)}"
+        return f"⚠ BOUCLE {'arrêtée' if e.get('stopped') else 'probable'} après {duration(e.get('sinceStartS'))} : {e.get('call')} répété {e.get('repeat')}× · {short(e.get('label'), 60)}"
     if t == "todo.stuck":
         return f"⚠ BLOQUÉ : todo {e.get('todo')} ({e.get('reason')})"
     if t == "plan.change":
@@ -77,14 +79,30 @@ def describe(e) -> str:
         return f"↓ événement {e.get('kind')} {detail}{late}"
     if t == "schedule.skipped":
         return f"⚠ tâche {e.get('schedule')} sautée (en retard de {e.get('lateMin')} min, sans rattrapage)"
+    if t == "notify.blocked":
+        return f"⛔ notify bloqué ({e.get('reason')}) : {e.get('text', '')[:80]}"
+    if t == "model.down":
+        return f"⚠ modèle injoignable (essai {e.get('tries')}) : travail en attente, nouvel essai dans {e.get('retryInMin')} min · {e.get('error', '')[:120]}"
+    if t == "model.up":
+        return f"✅ modèle de retour après {e.get('downForMin')} min : reprise du travail"
+    if t == "secret.requested":
+        return f"🔐 secret demandé à la personne : {', '.join(e.get('names') or [])} → {', '.join(e.get('hosts') or [])} · {e.get('purpose', '')}"
+    if t == "secret.saved":
+        return f"🔐 secret enregistré : {', '.join(e.get('names') or [])} → {', '.join(e.get('hosts') or [])}{' (lecture seule)' if e.get('readOnly') else ''}"
+    if t == "secret.cancelled":
+        return f"🔐 demande de secret refusée par la personne : {', '.join(e.get('names') or [])}"
+    if t in ("secret.request", "oauth.refresh"):
+        return ""
+    if t == "oauth.error":
+        return f"⚠ coffre : jeton {e.get('secret')} non renouvelé ({e.get('error')} {e.get('detail') or ''})"
     if t == "net.denied":
-        return f"⛔ coffre : refusé {e.get('method', '')} {e.get('host') or e.get('route') or e.get('url', '')} ({e.get('error')})"
+        return f"⛔ coffre : refusé {e.get('method', '')} {e.get('host') or e.get('route') or e.get('url', '')} ({e.get('error')})".replace("  ", " ")
     if t == "net.error":
         return f"⚠ coffre : erreur {e.get('method', '')} {e.get('host') or e.get('route') or e.get('url', '')} ({e.get('error') or e.get('status')})"
     if t == "net.out":
         return f"→ sortie {e.get('method')} {e.get('host')}:{e.get('port')}"
     if t == "vault.start":
-        return f"● coffre démarré (routes : {', '.join(e.get('routes') or []) or 'aucune'})"
+        return f"● coffre démarré (secrets : {', '.join(e.get('secrets') or e.get('routes') or []) or 'aucun'})"
     if t == "notify":
         return f"✉ notify ({e.get('channel')}) : {e.get('text')}"
     if t == "pi.exit":
@@ -129,7 +147,8 @@ def show(e, problems_only: bool):
     if e["type"] == "net.out" and not NETWORK:
         return
     text = describe(e)
-    print(f"{hour(e['t'])}  {text}")
+    if text:
+        print(f"{hour(e['t'])}  {text}")
 
 
 def runs(path: Path):

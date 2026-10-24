@@ -23,6 +23,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renam
 import { join } from "node:path";
 import { Type } from "typebox";
 import { log, pruneLogs } from "./log.ts";
+import { modelUnavailable, retryMinutes } from "./outage.ts";
 import { MEMORY, OPEN, type Plan, type Todo, type Work, newId, nextWork, now, objectiveBlock, readPlan, todoLine, updatePlan } from "./plan.ts";
 
 const HOME = process.env.DOT_HOME ?? "/dot";
@@ -45,7 +46,14 @@ const MAX_TEXT = 4000;
 
 type Kind = "tâche" | "veille" | "boîte";
 interface DotEvent { id: string; kind: Kind; text: string; tries?: number }
-interface State { paused?: boolean; lastAlive?: string; events: DotEvent[]; running?: { label: string; since: string }; backoffUntil?: string }
+interface State {
+  paused?: boolean;
+  lastAlive?: string;
+  events: DotEvent[];
+  running?: { label: string; since: string };
+  backoffUntil?: string;
+  modelDown?: { since: string; tries: number; error: string }; // le modèle ne répond plus
+}
 interface Schedule { id: string; prompt: string; every?: number; at?: string; days?: number[]; once?: string; catchUp?: boolean; paused?: boolean; lastRun?: string; nextRun: string }
 interface Watch { id: string; command: string; every: number; prompt: string; paused?: boolean; hash?: string; output?: string; nextCheck: string }
 
@@ -139,6 +147,7 @@ shared.status = () => {
   const watches = loadWatches();
   return [
     state.paused ? "⏸ Autonomie en pause (/resume pour reprendre)." : "▶ Autonomie active.",
+    ...(state.modelDown ? [`⚠️ Modèle injoignable depuis ${since(state.modelDown.since)} (${state.modelDown.tries} essais) : le travail attend.`] : []),
     state.running ? `En cours : ${state.running.label} (depuis ${since(state.running.since)}).` : "Aucun run en cours.",
     ...(state.events.length ? [`Événements en attente : ${state.events.map((e) => e.kind).join(", ")}.`] : []),
     "",
@@ -200,7 +209,9 @@ function eventPrompt(event: DotEvent): string {
 // LOOP_REPEATS fois de suite.
 interface RunInfo { label: string; kind: string; session: string; objective?: string; todo?: string }
 
-function runWorker(prompt: string, info: RunInfo): Promise<{ ok: boolean; text: string }> {
+interface RunResult { ok: boolean; text: string; unavailable: boolean }
+
+function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
   return new Promise((resolve) => {
     const started = Date.now();
     log("run.start", { ...info });
@@ -214,9 +225,8 @@ function runWorker(prompt: string, info: RunInfo): Promise<{ ok: boolean; text: 
     let errors = "";
     let timedOut = false;
     const stats = { turns: 0, toolCalls: 0, tools: {} as Record<string, number>, tokensIn: 0, tokensOut: 0, maxRepeat: 0 };
-    let lastCall = "";
-    let repeat = 0;
-    let loopLogged = false;
+    const seen = new Map<string, number>(); // appel (nom + arguments) → nombre de fois dans ce run
+    let loopStopped = false;
 
     function onEvent(event: any) {
       if (event.type === "turn_end") stats.turns += 1;
@@ -230,13 +240,17 @@ function runWorker(prompt: string, info: RunInfo): Promise<{ ok: boolean; text: 
       for (const call of (m.content ?? []).filter((c: any) => c.type === "toolCall")) {
         stats.toolCalls += 1;
         stats.tools[call.name] = (stats.tools[call.name] ?? 0) + 1;
+        // Même appel répété dans le run, à la suite ou non (A, B, A, B…) : c'est une boucle, le run
+        // est arrêté. Le travail n'est pas perdu : un todo reste en cours, un événement en file.
         const signature = `${call.name} ${JSON.stringify(call.arguments ?? {})}`;
-        repeat = signature === lastCall ? repeat + 1 : 1;
-        lastCall = signature;
+        const repeat = (seen.get(signature) ?? 0) + 1;
+        seen.set(signature, repeat);
         stats.maxRepeat = Math.max(stats.maxRepeat, repeat);
-        if (repeat >= LOOP_REPEATS && !loopLogged) {
-          loopLogged = true;
-          log("loop.suspect", { ...info, repeat, call: signature.slice(0, 300), sinceStartS: Math.round((Date.now() - started) / 1000) });
+        if (repeat >= LOOP_REPEATS && !loopStopped) {
+          loopStopped = true;
+          log("loop.suspect", { ...info, repeat, call: signature.slice(0, 300), sinceStartS: Math.round((Date.now() - started) / 1000), stopped: true });
+          errors = `run arrêté : boucle (${call.name} répété ${repeat} fois)`;
+          child.kill("SIGTERM");
         }
       }
     }
@@ -260,22 +274,25 @@ function runWorker(prompt: string, info: RunInfo): Promise<{ ok: boolean; text: 
     }, RUN_MINUTES * 60_000);
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      const ok = code === 0 && !!text;
+      const ok = code === 0 && !!text && !loopStopped;
       // SIGKILL sans dépassement de durée : en général, le noyau a tué pi faute de mémoire.
       const killed = signal === "SIGKILL" && !timedOut ? "tué par le système (mémoire ?)" : undefined;
       const result = text || killed || errors.trim() || `pi s'est arrêté (code ${code})`;
+      const unavailable = modelUnavailable({ ok, tokensOut: stats.tokensOut, toolCalls: stats.toolCalls, error: errors });
       log("run.end", {
         ...info,
         ok,
         code,
         signal: signal ?? undefined,
         timedOut: timedOut || undefined,
+        loopStopped: loopStopped || undefined,
         durationS: Math.round((Date.now() - started) / 1000),
         ...stats,
         error: ok ? undefined : (killed ?? errors.trim().slice(0, 500)) || undefined,
         report: text.slice(0, 300) || undefined,
+        modelUnavailable: unavailable || undefined,
       });
-      resolve({ ok, text: result });
+      resolve({ ok, text: result, unavailable });
     });
   });
 }
@@ -389,7 +406,8 @@ export default function (pi: ExtensionAPI) {
       } catch {}
       mkdirSync(INBOX_DONE, { recursive: true });
       renameSync(file, join(INBOX_DONE, `${new Date().toISOString().replace(/[:.]/g, "-")}-${name}`));
-      enqueue("boîte", `[dot:boîte] ${stamp()}\nLa personne a déposé « ${name} » dans la boîte :\n${cut(text)}`, { file: name });
+      const who = name.startsWith("coffre-") ? "Le coffre t'a laissé" : "La personne a déposé";
+      enqueue("boîte", `[dot:boîte] ${stamp()}\n${who} « ${name} » dans la boîte :\n${cut(text)}`, { file: name });
     }
   }
 
@@ -400,6 +418,28 @@ export default function (pi: ExtensionAPI) {
       pi.sendMessage({ customType: "dot-run", content, display: true }, ctx?.isIdle?.() ? {} : { deliverAs: "nextTurn" });
     } catch {}
     appendFileSync(join(MEMORY, "JOURNAL.md"), `\n- ${stamp()} · ${label} — ${text.split("\n")[0].slice(0, 300)}\n`);
+  }
+
+  // Panne du modèle : rien n'est compté comme un échec, le travail attend. La personne est prévenue
+  // une fois, puis au retour du modèle.
+  function onModelDown(error: string) {
+    let first = false;
+    changeState((s) => {
+      first = !s.modelDown;
+      s.modelDown = { since: s.modelDown?.since ?? now(), tries: (s.modelDown?.tries ?? 0) + 1, error: error.slice(0, 200) };
+      s.backoffUntil = later(retryMinutes(s.modelDown.tries));
+    });
+    const state = loadState();
+    log("model.down", { tries: state.modelDown?.tries, retryInMin: retryMinutes(state.modelDown?.tries ?? 1), error: error.slice(0, 200) });
+    if (first) shared.send?.(`⚠️ Je n'arrive plus à joindre mon modèle (${error.slice(0, 120)}). Mon travail attend, rien n'est perdu : je réessaie régulièrement et je te préviens quand il revient.`);
+  }
+  function onModelUp() {
+    const down = loadState().modelDown;
+    if (!down) return;
+    changeState((s) => delete s.modelDown);
+    const minutes = Math.round((Date.now() - new Date(down.since).getTime()) / 60_000);
+    log("model.up", { downForMin: minutes, tries: down.tries });
+    shared.send?.(`✅ Mon modèle répond de nouveau (coupure d'environ ${minutes} min). Je reprends le travail en attente.`);
   }
 
   // Un todo que le run n'a pas conclu reste en cours ; au-delà de MAX_RUNS, on demande de l'aide.
@@ -431,6 +471,11 @@ export default function (pi: ExtensionAPI) {
       const label = `événement (${event.kind})`;
       changeState((s) => (s.running = { label, since: now() }));
       const result = await runWorker(eventPrompt(event), { label, kind: `event:${event.kind}`, session: "dot-evenements" });
+      if (result.unavailable) {
+        changeState((s) => delete s.running);
+        return onModelDown(result.text);
+      }
+      onModelUp();
       changeState((s) => {
         delete s.running;
         const e = s.events.find((x) => x.id === event.id);
@@ -464,6 +509,11 @@ export default function (pi: ExtensionAPI) {
         objective: objective.id,
         todo: next.todo.id,
       });
+      if (result.unavailable) {
+        changeState((s) => delete s.running);
+        return onModelDown(result.text); // le todo reste « en cours » : il sera repris
+      }
+      onModelUp();
       changeState((s) => {
         delete s.running;
         if (!result.ok) s.backoffUntil = later(2);
@@ -479,6 +529,11 @@ export default function (pi: ExtensionAPI) {
     const label = `${objective.title} · plan`;
     changeState((s) => (s.running = { label, since: now() }));
     const result = await runWorker(planPrompt(plan, next), { label, kind: "plan", session: sessionId, objective: objective.id });
+    if (result.unavailable) {
+      changeState((s) => delete s.running);
+      return onModelDown(result.text);
+    }
+    onModelUp();
     changeState((s) => {
       delete s.running;
       if (!result.ok) s.backoffUntil = later(2);
@@ -553,7 +608,24 @@ export default function (pi: ExtensionAPI) {
 
 // --- Outils : les mêmes dans la conversation et dans les runs -------------------------------------
 
+const MAX_NOTIFY_PER_RUN = num("DOT_MAX_NOTIFY", 3);
+const NOTIFY_MEMORY = join(MEMORY, "notify-recent.json");
+let notifyCount = 0; // un run de travail est un processus : le compteur vaut pour le run
+
+// Un message identique, déjà envoyé dans les 6 dernières heures, n'est pas renvoyé.
+function alreadySent(text: string): boolean {
+  const hash = createHash("sha256").update(text).digest("hex");
+  const limit = Date.now() - 6 * 3600_000;
+  const recent = readJson<Record<string, number>>(NOTIFY_MEMORY, {});
+  for (const [h, t] of Object.entries(recent)) if (t < limit) delete recent[h];
+  const seen = !!recent[hash];
+  if (!seen) recent[hash] = Date.now();
+  writeJson(NOTIFY_MEMORY, recent);
+  return seen;
+}
+
 function registerTools(pi: ExtensionAPI) {
+  pi.on("agent_start", () => (notifyCount = 0)); // la limite vaut par demande traitée
   pi.registerTool({
     name: "notify",
     label: "notify",
@@ -564,6 +636,16 @@ function registerTools(pi: ExtensionAPI) {
     async execute(_id: string, args: any) {
       const text = String(args.text ?? "").trim();
       if (!text) return answer("Empty message.", true);
+      // Garde-fous, quel que soit le modèle : peu de messages par run, jamais deux fois le même.
+      notifyCount += 1;
+      if (notifyCount > MAX_NOTIFY_PER_RUN) {
+        log("notify.blocked", { reason: "trop de messages dans ce run", text: text.slice(0, 120) });
+        return answer(`Not sent: at most ${MAX_NOTIFY_PER_RUN} messages per run. Put everything in one message.`, true);
+      }
+      if (alreadySent(text)) {
+        log("notify.blocked", { reason: "déjà envoyé", text: text.slice(0, 120) });
+        return answer("Not sent: this exact message was already sent to the person recently. Do not send it again.", true);
+      }
       log("notify", { text: text.slice(0, 300), channel: shared.send ? "telegram" : "file" });
       if (shared.send) {
         shared.send(text);
@@ -571,6 +653,54 @@ function registerTools(pi: ExtensionAPI) {
       }
       appendFileSync(join(MEMORY, "NOTIFICATIONS.md"), `\n## ${stamp()}\n${text}\n`);
       return answer(`No messaging channel is configured: the message was written to ${join(MEMORY, "NOTIFICATIONS.md")}.`);
+    },
+  });
+
+  pi.registerTool({
+    name: "secret",
+    label: "secret",
+    description:
+      "Your secrets live in the vault, never with you. You only know their NAMES; the vault puts the values in your requests. " +
+      "To call a service through the vault: http://dot-vault:8080/https/<host>/<path> (or /http/…), writing {{NAME}} where a secret goes (URL or header), " +
+      "e.g. `Authorization: Bearer {{API_TOKEN}}` or `Authorization: Basic {{basic:SERVICE_USER:SERVICE_PASSWORD}}`; for mail (IMAP, read-only): POST http://dot-vault:8080/_vault/mail (see `curl http://dot-vault:8080/`). A secret only goes to its allowed hosts. " +
+      "action `list`: the secrets that exist (names, allowed hosts, read-only), never their values. " +
+      "action `request`: ask the person for missing secrets; the vault asks them on Telegram, catches their answers before they reach you, stores them, " +
+      "and drops a note in your inbox when done. Give `secrets` (names in CAPITALS with a human label), `hosts` (where they may be sent), `read_only`, and `purpose`.",
+    promptSnippet: "secret: list the vault's secrets, or ask the person for a missing one (you never see values)",
+    promptGuidelines: [
+      "Never ask the person for a password, key or token in the conversation, and never look for one in your environment: use `secret` request.",
+      "In skills and scripts, write {{NAME}} placeholders and send requests through http://dot-vault:8080/https/<host>/…; never store a secret value anywhere.",
+      "Ask for the narrowest `hosts` (e.g. *.example.com) and `read_only: true` unless writing is really needed.",
+    ],
+    parameters: Type.Object({
+      action: Type.String({ description: "list | request" }),
+      secrets: Type.Optional(Type.Array(Type.Object({ name: Type.String({ description: "NAME_IN_CAPITALS" }), label: Type.String({ description: "What it is, for the person (e.g. Identifiant du service)" }) }))),
+      hosts: Type.Optional(Type.Array(Type.String(), { description: "Servers the secrets may be sent to, e.g. *.example.com, api.example.com" })),
+      read_only: Type.Optional(Type.Boolean({ description: "Only read requests may carry these secrets (default true)" })),
+      purpose: Type.Optional(Type.String({ description: "What they are for, one sentence the person will read" })),
+    }),
+    async execute(_id: string, args: any) {
+      const vault = (process.env.DOT_VAULT ?? "http://dot-vault:8080").replace(/\/$/, "");
+      try {
+        if (args.action === "list") {
+          const res = await fetch(`${vault}/_vault/secrets`, { signal: AbortSignal.timeout(10_000) });
+          return answer(await res.text(), !res.ok);
+        }
+        if (args.action === "request") {
+          const res = await fetch(`${vault}/_vault/request`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ secrets: args.secrets, hosts: args.hosts, readOnly: args.read_only !== false, purpose: args.purpose }),
+            signal: AbortSignal.timeout(30_000),
+          });
+          const text = await res.text();
+          log("secret.request", { status: res.status, names: (args.secrets ?? []).map((s: any) => s?.name), hosts: args.hosts });
+          return answer(res.ok ? `${text}\nMark the todo that needs it as waiting; you will get a [dot:boîte] note when the person has answered.` : text, !res.ok);
+        }
+        return answer("Unknown action: use list or request.", true);
+      } catch (error: any) {
+        return answer(`Vault unreachable: ${error.message}`, true);
+      }
     },
   });
 

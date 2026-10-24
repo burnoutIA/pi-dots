@@ -2,6 +2,8 @@
 
 Un dot est un agent pi **autonome et proactif** qui vit dans un **environnement clos**, livré déjà préconfiguré.
 
+On peut lui demander à peu près tout : il se débrouille, avec son propre OS et ses outils. La seule règle imposée est la sécurité : tout ce qui sort, et tous les secrets, passent par le coffre.
+
 Le dépôt fournit trois choses :
 - l'environnement ;
 - l'agent ;
@@ -42,6 +44,10 @@ L'utilisateur ne fournit que ses variables.
 ## Objectifs de l'agent
 
 **Ouverts.** Ils ne sont pas définis par le projet, mais au fil de l'usage.
+
+## Ce qui n'est pas le projet
+
+Les usages d'une personne (un brief du matin, un skill agenda ou mail, tel service connecté…) ne font pas partie du dépôt : ce sont des demandes faites au dot, qu'il réalise lui-même. Ils vivent dans son état (`state/`) et dans le coffre de la personne (`config/`), jamais dans le code.
 
 ## À traiter plus tard
 

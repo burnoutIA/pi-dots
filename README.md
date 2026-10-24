@@ -8,7 +8,7 @@ Il tourne quand on lance l'environnement. Quand on l'arrête, il reprend là où
 
 ```bash
 cp .env.example .env                              # provider, modèle, rythme : rien de secret
-cp config/vault.example.json config/vault.json    # les secrets : clés d'API, jeton Telegram
+cp config/vault.example.json config/vault.json    # les premiers secrets : clé du modèle, jeton Telegram
 cp config/models.example.json config/models.json  # si ton provider n'est pas connu de pi
 ./dot build                       # construit l'image (une fois, puis à chaque mise à jour)
 ./dot start                       # lance le coffre, puis le dot
@@ -23,31 +23,50 @@ Il faut docker ou podman. Le script prend celui qui est installé ; on peut forc
 | Fichier | Lu par | Contenu |
 |---|---|---|
 | `.env` | le dot | provider et modèle (`DOT_PROVIDER`, `DOT_MODEL`), `TELEGRAM_OWNER_ID`, rythme, ressources. **Aucun secret** : `./dot start` refuse de démarrer s'il en voit un |
-| `config/vault.json` | le coffre seul | les routes vers les providers avec leurs en-têtes secrets, le jeton Telegram, les adresses privées autorisées |
-| `config/models.json` | le dot | facultatif : les providers à déclarer à pi, avec `baseUrl` pointant vers le coffre (`http://dot-vault:8080/<route>`) et `apiKey: "vault"` |
+| `config/vault.json` | le coffre seul | la liste des secrets : nom → valeur, avec les serveurs où chacun a le droit d'aller |
+| `config/models.json` | le dot | facultatif : les providers à déclarer à pi, avec `baseUrl` passant par le coffre et `apiKey: "{{MODEL_KEY}}"` |
 
 ## Le coffre : réseau et secrets
 
 Le dot n'a **aucun accès direct au réseau**. Il vit sur un réseau interne où il ne voit qu'un seul autre conteneur : `dot-vault`, le coffre.
 
 - **Internet** passe par le coffre, qui sert de proxy. pi, `curl`, `git`, `pip`, `npm`, `apt`, Node et le navigateur l'utilisent déjà.
-- **Réseau local et machine hôte** : le coffre refuse les adresses privées, sauf celles listées dans `allow` de `config/vault.json`. Chaque refus est noté au journal.
-- **Secrets** : pour joindre un provider, le dot appelle une route du coffre (`http://dot-vault:8080/local/...`). Le coffre y ajoute lui-même la clé et transmet à l'adresse réelle, qui peut être ton serveur d'inférence sur la machine hôte. Le dot connaît le nom de la route, jamais la clé, même avec `sudo`.
+- **Réseau local et machine hôte** : le coffre les refuse, sauf les adresses listées dans `allow` et les serveurs nommés par un secret.
+- **Secrets** : le dot ne connaît que leurs noms. Il écrit `{{NOM}}` dans ses requêtes, envoyées par `http://dot-vault:8080/https/<serveur>/…`, et le coffre met la vraie valeur au passage.
 
-Exemple de `config/vault.json` pour un serveur d'inférence sur la machine hôte :
+### Les secrets : une liste nom → valeur
 
 ```json
 {
-  "routes": {
-    "local": {
-      "upstream": "http://host.docker.internal:4748/v1",
-      "headers": { "Authorization": "Bearer ta-cle" }
-    }
+  "secrets": {
+    "MODEL_KEY":        { "value": "sk-…",       "hosts": ["host.docker.internal:8080"] },
+    "TELEGRAM_TOKEN":   { "value": "123456:…",   "hosts": ["api.telegram.org"] },
+    "SERVICE_USER":     { "value": "moi@…",      "hosts": ["*.example.com"], "readOnly": true },
+    "SERVICE_PASSWORD": { "value": "…",          "hosts": ["*.example.com"], "readOnly": true }
   },
-  "telegram": { "token": "123456:jeton-du-bot" },
   "allow": []
 }
 ```
+
+| Champ | Rôle |
+|---|---|
+| `value` | la valeur (ou `oauth` : `clientId`, `clientSecret`, `refreshToken`, `tokenUrl`, pour un jeton que le coffre renouvelle lui-même) |
+| `hosts` | **obligatoire** : les seuls serveurs vers lesquels ce secret peut partir. Sans ça, le dot pourrait l'envoyer n'importe où |
+| `readOnly` | facultatif : une requête qui porte ce secret ne peut que lire (`GET`, `HEAD`, `OPTIONS`, `PROPFIND`, `REPORT`) |
+
+Dans une requête du dot : `Authorization: Bearer {{MODEL_KEY}}`, ou `Authorization: Basic {{basic:SERVICE_USER:SERVICE_PASSWORD}}`. Les marqueurs marchent aussi dans l'adresse (`/bot{{TELEGRAM_TOKEN}}/…`).
+
+Les mails (IMAP) ne sont pas du web : le coffre les lit lui-même, en lecture seule (`POST http://dot-vault:8080/_vault/mail`), avec un identifiant et un mot de passe donnés en `{{NOM}}`. Il ouvre les dossiers en consultation et ne marque rien comme lu.
+
+### Ajouter un secret : c'est le dot qui le demande
+
+Tu n'as pas à éditer `vault.json`. Quand il manque un secret au dot pour faire ce que tu lui demandes, il le demande au coffre avec l'outil `secret` :
+
+1. Le coffre, et non l'IA, t'écrit sur Telegram : à quoi servira le secret, vers quels serveurs il pourra partir, en lecture seule ou non.
+2. Tu réponds dans Telegram, ou tu tapes `/annuler`. Le coffre intercepte ta réponse avant qu'elle n'atteigne le dot, l'enregistre et **efface ton message du fil**.
+3. Le coffre te confirme l'enregistrement et prévient le dot par sa boîte de dépôt. Il n'y a rien à redémarrer.
+
+Limite : un service qui exige une autorisation dans un navigateur (OAuth) ne se configure pas par Telegram ; son secret s'ajoute à la main dans `vault.json`.
 
 Ce que le coffre ne protège pas : ce que le dot voit ou fait avec ses accès. Donne-lui des comptes et des droits à sa mesure (lecture seule quand c'est possible, son propre compte git…).
 
@@ -134,6 +153,6 @@ image/entrypoint.sh     démarrage : config de pi depuis .env, pi dans tmux
 image/defaults/         consignes du dot, serveurs MCP, modèles de mémoire
 image/extensions/dot/           autonomie : plan (objectifs, todos), battement, runs de travail, schedule, watch, boîte, notify
 image/extensions/dot-telegram/  canal Telegram (via le coffre)
-image/vault/vault.mjs           le coffre : proxy sortant filtré et relais à secrets
+image/vault/vault.mjs           le coffre : proxy sortant filtré, secrets remplacés au passage, demandes par Telegram
 tools/journal.py                lecture du journal depuis la machine hôte
 ```

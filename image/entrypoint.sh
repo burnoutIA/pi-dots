@@ -25,6 +25,9 @@ for file in MEMORY.md JOURNAL.md; do
   [ -e "$DOT_HOME/memory/$file" ] || cp "/opt/dot/defaults/memory/$file" "$DOT_HOME/memory/$file"
 done
 
+# Au démarrage, aucun pi ne tourne encore : un verrou restant date du démarrage précédent.
+rm -f "$AGENT/telegram.lock"
+
 # Providers déclarés par l'utilisateur (endpoints compatibles, serveurs locaux…).
 if [ -f /opt/dot/config/models.json ]; then
   cp /opt/dot/config/models.json "$AGENT/models.json"

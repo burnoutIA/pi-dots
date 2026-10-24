@@ -1,9 +1,9 @@
 {
   "providers": {
     "local": {
-      "baseUrl": "http://dot-vault:8080/local",
+      "baseUrl": "http://dot-vault:8080/http/host.docker.internal:8080/v1",
       "api": "openai-completions",
-      "apiKey": "vault",
+      "apiKey": "{{MODEL_KEY}}",
       "models": [
         {
           "id": "mon-modele",

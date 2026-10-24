@@ -9,8 +9,8 @@
 //
 // Configuration : TELEGRAM_OWNER_ID (l'identifiant de la personne, seule écoutée). Le jeton du bot
 // n'est pas dans l'environnement du dot : les appels passent par le coffre (DOT_VAULT), qui
-// l'ajoute lui-même (routes `telegram` et `telegram-file`). Hors coffre, TELEGRAM_BOT_TOKEN
-// marche aussi. Sans identifiant, l'extension ne fait rien.
+// remplace {{TELEGRAM_TOKEN}} par sa valeur. Hors coffre, TELEGRAM_BOT_TOKEN marche aussi.
+// Sans identifiant, l'extension ne fait rien.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -27,8 +27,8 @@ interface Attachment {
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN?.trim() ?? "";
 const VAULT = process.env.DOT_VAULT?.trim().replace(/\/$/, "") ?? "";
 const OWNER = Number(process.env.TELEGRAM_OWNER_ID);
-const API = TOKEN ? `https://api.telegram.org/bot${TOKEN}` : VAULT ? `${VAULT}/telegram` : "";
-const FILE_API = TOKEN ? `https://api.telegram.org/file/bot${TOKEN}` : VAULT ? `${VAULT}/telegram-file` : "";
+const API = TOKEN ? `https://api.telegram.org/bot${TOKEN}` : VAULT ? `${VAULT}/https/api.telegram.org/bot{{TELEGRAM_TOKEN}}` : "";
+const FILE_API = TOKEN ? `https://api.telegram.org/file/bot${TOKEN}` : VAULT ? `${VAULT}/https/api.telegram.org/file/bot{{TELEGRAM_TOKEN}}` : "";
 const HOME = process.env.DOT_HOME ?? "/dot";
 const FILES = join(HOME, "workspace", "files");
 const LOCK = join(process.env.PI_CODING_AGENT_DIR ?? HOME, "telegram.lock");
@@ -67,10 +67,11 @@ const megabytes = (bytes: number) => (bytes < 1e6 ? `${Math.max(1, Math.round(by
 function takeLock(): boolean {
   try {
     const pid = Number(readFileSync(LOCK, "utf8"));
+    // Le verrou ne compte que s'il désigne un pi vivant : après un redémarrage, son numéro peut
+    // être repris par un tout autre processus.
     if (pid && pid !== process.pid) {
       try {
-        process.kill(pid, 0);
-        return false;
+        if (/(^|\/)pi(\0|$)/.test(readFileSync(`/proc/${pid}/cmdline`, "utf8"))) return false;
       } catch {}
     }
   } catch {}
@@ -98,8 +99,16 @@ export default function (pi: ExtensionAPI) {
   if (!API || !Number.isInteger(OWNER) || !process.env.TELEGRAM_OWNER_ID) return;
   const api = API;
 
+  // Chaque appel a une limite de temps : une connexion coupée sans prévenir (le coffre relancé,
+  // le réseau qui tombe) ne doit pas bloquer la lecture des messages pour toujours.
   async function tg(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
-    const res = await fetch(`${api}/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(params), signal });
+    const limit = AbortSignal.timeout(method === "getUpdates" ? 70_000 : 30_000);
+    const res = await fetch(`${api}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(params),
+      signal: signal ? AbortSignal.any([signal, limit]) : limit,
+    });
     const json: any = await res.json();
     if (!json.ok) throw new Error(`Telegram ${method}: ${json.description}`);
     return json.result;
@@ -127,7 +136,7 @@ export default function (pi: ExtensionAPI) {
       form.set("chat_id", String(chatId()));
       if (caption) form.set("caption", caption.slice(0, 1000));
       form.set(photo ? "photo" : "document", new Blob([readFileSync(file)]), basename(file));
-      const res = await fetch(`${api}/${photo ? "sendPhoto" : "sendDocument"}`, { method: "POST", body: form });
+      const res = await fetch(`${api}/${photo ? "sendPhoto" : "sendDocument"}`, { method: "POST", body: form, signal: AbortSignal.timeout(120_000) });
       const json: any = await res.json();
       if (!json.ok) throw new Error(json.description);
     });
@@ -222,7 +231,7 @@ export default function (pi: ExtensionAPI) {
   async function receive(file: Attachment, signal: AbortSignal): Promise<{ note: string; image?: { type: "image"; data: string; mimeType: string } }> {
     if (file.bytes > MAX_FILE_BYTES) throw new Error(`il pèse ${megabytes(file.bytes)}, et Telegram ne laisse pas un bot télécharger plus de ${megabytes(MAX_FILE_BYTES)}`);
     const remote = await tg("getFile", { file_id: file.id }, signal);
-    const res = await fetch(`${FILE_API}/${remote.file_path}`, { signal });
+    const res = await fetch(`${FILE_API}/${remote.file_path}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]) });
     if (!res.ok) throw new Error(`Telegram a répondu ${res.status}`);
     const data = Buffer.from(await res.arrayBuffer());
     mkdirSync(FILES, { recursive: true });

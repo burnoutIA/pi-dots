@@ -5,3 +5,6 @@ config/*
 
 # État du dot (mémoire, sessions, navigateur, travail) : propre à chaque machine
 state/
+
+# Fichiers générés
+__pycache__/

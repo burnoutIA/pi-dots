@@ -1,14 +1,7 @@
 {
-  "routes": {
-    "local": {
-      "upstream": "http://host.docker.internal:8080/v1",
-      "headers": { "Authorization": "Bearer ta-cle-ici" }
-    },
-    "deepseek": {
-      "upstream": "https://api.deepseek.com",
-      "headers": { "Authorization": "Bearer sk-ta-cle-ici" }
-    }
+  "secrets": {
+    "MODEL_KEY": { "value": "ta-cle-du-modele", "hosts": ["host.docker.internal:8080"] },
+    "TELEGRAM_TOKEN": { "value": "123456:jeton-du-bot", "hosts": ["api.telegram.org"] }
   },
-  "telegram": { "token": "123456:jeton-du-bot" },
   "allow": []
 }

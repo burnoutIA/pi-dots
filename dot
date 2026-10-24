@@ -40,7 +40,7 @@ check_secrets() {
   fi
   if grep -qE '"apiKey"\s*:\s*"(sk-|[A-Za-z0-9_-]{24,})' "$ROOT/config/models.json" 2>/dev/null; then
     echo "config/models.json contient une clé d'API : le dot la verrait." >&2
-    echo "Mettez la clé dans config/vault.json, et dans models.json \"apiKey\": \"vault\" avec \"baseUrl\": \"$PROXY/<route>\"." >&2
+    echo "Mettez-la dans config/vault.json (ex. MODEL_KEY), et dans models.json \"apiKey\": \"{{MODEL_KEY}}\" avec \"baseUrl\": \"$PROXY/https/<serveur>/…\"." >&2
     exit 1
   fi
 }
@@ -51,9 +51,12 @@ start_vault() {
   local args=(
     -d --name "$VAULT" --hostname "$VAULT"
     --memory 256m --cpus 1 --pids-limit 256
-    -v "$ROOT/config/vault.json:/vault/vault.json:ro"
+    # vault.json en écriture : le coffre y ajoute les secrets que la personne lui donne par Telegram.
+    -v "$ROOT/config/vault.json:/vault/vault.json"
     -v "$ROOT/state/logs:/logs"
+    -v "$ROOT/state/inbox:/inbox"
     -e "TZ=$(setting TZ)"
+    -e "TELEGRAM_OWNER_ID=$(setting TELEGRAM_OWNER_ID)"
     --add-host host.docker.internal:host-gateway
     --entrypoint node
   )
