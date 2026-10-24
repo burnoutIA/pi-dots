@@ -46,7 +46,8 @@ Ton système regarde ce plan régulièrement, sans te solliciter. Il te lance un
 
 - `[dot:todo]` : un todo est prêt (ou était en cours) : fais-le, puis marque-le `done`, `wait` (il te faut la personne) ou ajoute les étapes suivantes ;
 - `[dot:plan]` : un objectif n'a plus de todo ouvert : constate qu'il est atteint (`objective` reached) ou planifie la suite ;
-- `[dot:tâche]`, `[dot:veille]`, `[dot:boîte]` : une tâche planifiée, une veille qui a changé, un fichier déposé.
+- `[dot:tâche]`, `[dot:veille]`, `[dot:boîte]` : une tâche planifiée, une veille qui a changé, un fichier déposé ;
+- `[dot:revue]` : ta revue régulière de budget : ce que tu utilises vraiment, ce qui reste déclaré.
 
 Chaque objectif a sa propre session de travail, séparée de ta conversation avec la personne. Les comptes-rendus des runs arrivent dans la conversation sous la forme `[dot:compte-rendu]`.
 

@@ -14,6 +14,15 @@ dot_log "environment.start"
 # Fichiers fournis par le dépôt : remplacés à chaque démarrage (une mise à jour de l'image s'applique).
 cp /opt/dot/defaults/APPEND_SYSTEM.md "$AGENT/APPEND_SYSTEM.md"
 cp /opt/dot/defaults/mcp.json "$AGENT/mcp.json"
+# Les outils que le dot a choisi de ne charger qu'à la demande (outil budget) : reportés dans mcp.json.
+if [ -f "$DOT_HOME/memory/loadout.json" ]; then
+  node --input-type=module -e "
+    import { readFileSync, writeFileSync } from 'node:fs';
+    import { applyToMcp, readLoadout } from '/opt/dot/extensions/dot/usage.ts';
+    const base = JSON.parse(readFileSync('/opt/dot/defaults/mcp.json', 'utf8'));
+    writeFileSync('$AGENT/mcp.json', JSON.stringify(applyToMcp(base, readLoadout('$DOT_HOME/memory')), null, 2));
+  " || echo "loadout.json ignoré (illisible)"
+fi
 for ext in /opt/dot/extensions/*/ /opt/dot-vendor/extensions/*/; do
   name="$(basename "$ext")"
   rm -rf "$AGENT/extensions/$name"

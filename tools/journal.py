@@ -79,6 +79,8 @@ def describe(e) -> str:
         return f"↓ événement {e.get('kind')} {detail}{late}"
     if t == "schedule.skipped":
         return f"⚠ tâche {e.get('schedule')} sautée (en retard de {e.get('lateMin')} min, sans rattrapage)"
+    if t == "budget.set":
+        return f"⚙ outils passés en {e.get('exposure')} : {', '.join(e.get('tools') or [])}"
     if t == "memory.remember":
         return f"🧠 retenu : {e.get('fact')}"
     if t == "memory.forget":

@@ -87,3 +87,33 @@ test("skills : un SKILL.md sans en-tête name/description est signalé", async (
   writeFileSync(join(d, "mauvais", "SKILL.md"), "# Mauvais\nPas d'en-tête.\n");
   assert.deepEqual(skillProblems(d), ["mauvais"]);
 });
+
+test("usage : appels comptés par jour, skill reconnu, fenêtre de 30 jours", async () => {
+  const u = await import(`${src}/extensions/dot/usage.ts`);
+  const { mkdtempSync } = await import("node:fs");
+  const d = mkdtempSync(join(tmpdir(), "dot-usage-"));
+  const now = new Date("2026-10-24T10:00:00Z");
+  u.record(d, "bash", { command: "python3 /dot/agent/skills/mail/bin/x.py list" }, now);
+  u.record(d, "read", { path: "/dot/agent/skills/mail/SKILL.md" }, now);
+  u.record(d, "bash", { command: "ls" }, new Date("2026-09-01T10:00:00Z"));
+  const usage = u.readUsage(d);
+  assert.equal(u.uses(usage.tools.bash, 30, now).count, 1);
+  assert.equal(u.uses(usage.skills.mail, 30, now).count, 2);
+  assert.equal(u.skillOf({ command: "echo bonjour" }), null);
+});
+
+test("loadout : les outils de base restent déclarés ; le différé est reporté dans la config MCP", async () => {
+  const u = await import(`${src}/extensions/dot/usage.ts`);
+  const { mkdtempSync } = await import("node:fs");
+  const d = mkdtempSync(join(tmpdir(), "dot-loadout-"));
+  const r = u.setExposure(d, ["bash", "mcp__playwright__browser_drag", "watch"], "deferred");
+  assert.deepEqual(r.refused, ["bash"]);
+  assert.deepEqual(u.readLoadout(d), { mcp__playwright__browser_drag: "deferred", watch: "deferred" });
+  const base = { mcpServers: { playwright: { command: "x" }, ketch: { command: "k", toolExposure: { crawl: "hidden" } } } };
+  const mcp = u.applyToMcp(base, u.readLoadout(d));
+  assert.deepEqual(mcp.mcpServers.playwright.toolExposure, { browser_drag: "deferred" });
+  assert.deepEqual(mcp.mcpServers.ketch.toolExposure, { crawl: "hidden" });
+  assert.equal(base.mcpServers.playwright.toolExposure, undefined, "la config d'origine n'est pas modifiée");
+  u.setExposure(d, ["watch"], "direct");
+  assert.deepEqual(u.readLoadout(d), { mcp__playwright__browser_drag: "deferred" });
+});

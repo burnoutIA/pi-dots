@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import { log, pruneLogs } from "./log.ts";
 import { forget, readMemory, remember, skillProblems } from "./memory.ts";
+import { type Exposure, PROTECTED, applyToMcp, declaredTokens, readLoadout, readUsage, record, setExposure, usageFile, uses } from "./usage.ts";
 import { modelUnavailable, retryMinutes } from "./outage.ts";
 import { type Schedule, nextAfter } from "./schedule.ts";
 import { MEMORY, OPEN, type Plan, type Todo, type Work, newId, nextWork, now, objectiveBlock, readPlan, todoLine, updatePlan } from "./plan.ts";
@@ -43,10 +44,12 @@ const RUN_MINUTES = num("DOT_RUN_MINUTES", 30); // durée maximale d'un run
 const MAX_RUNS = num("DOT_MAX_RUNS", 3); // runs sur un même todo avant de demander de l'aide
 const TICK_MS = num("DOT_TICK_MS", 15_000);
 const LOOP_REPEATS = num("DOT_LOOP_REPEATS", 5); // même appel d'outil répété : boucle probable
+const REVIEW_DAYS = num("DOT_REVIEW_DAYS", 7); // revue de son budget par le dot (0 = jamais)
+const SKILLS_DIR = join(process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent"), "skills");
 const LATE_SKIP_MS = 15 * 60_000;
 const MAX_TEXT = 4000;
 
-type Kind = "tâche" | "veille" | "boîte";
+type Kind = "tâche" | "veille" | "boîte" | "revue";
 interface DotEvent { id: string; kind: Kind; text: string; tries?: number }
 interface State {
   paused?: boolean;
@@ -55,6 +58,7 @@ interface State {
   running?: { label: string; since: string };
   backoffUntil?: string;
   modelDown?: { since: string; tries: number; error: string }; // le modèle ne répond plus
+  nextReview?: string; // prochaine revue de budget
 }
 interface Watch { id: string; command: string; every: number; prompt: string; paused?: boolean; hash?: string; output?: string; nextCheck: string }
 
@@ -309,9 +313,21 @@ function memorySection(): string {
 export default function (pi: ExtensionAPI) {
   let atStart = "";
   let brokenSkills: string[] = [];
-  pi.on("session_start", () => {
+  let budgetNote = "";
+  let lastCtx: any = null;
+  // Chaque appel d'outil est compté (et le skill qu'il touche) : c'est sur cet usage réel que le
+  // dot décide ce qui reste déclaré au modèle.
+  pi.on("tool_call", (event: any) => {
+    try {
+      record(MEMORY, event.toolName, event.input ?? event.args);
+    } catch {}
+  });
+  pi.on("session_start", (_event: any, context: any) => {
     mkdirSync(MEMORY, { recursive: true });
+    if (!existsSync(usageFile(MEMORY))) seedUsage();
     atStart = memorySection();
+    lastCtx = context;
+    budgetNote = ""; // calculée au premier appel, quand les outils MCP sont connectés
     brokenSkills = skillProblems(join(process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent"), "skills"));
     if (brokenSkills.length) log("skills.broken", { skills: brokenSkills });
   });
@@ -322,6 +338,7 @@ export default function (pi: ExtensionAPI) {
         ? "This is a work run: you were started on your own, on one precise job (described in the message). Nobody reads this run live. Do the job, keep the plan up to date with `todo` / `objective`, use `notify` only for what the person must know, and finish with a short report."
         : "This is your conversation with the person. Your work on objectives runs separately (one session per objective); its reports reach this conversation as `[dot:compte-rendu]` messages. To start some work, create an objective or todos: the work runs will take them up.",
       dot_memory: `Your persistent state, as it was when this session started (read /dot/memory again for the current version):\n\n${atStart}`,
+      dot_budget: (budgetNote ||= budgetSection(pi, lastCtx)),
       ...(brokenSkills.length
         ? {
             dot_skills: `These skills of yours are NOT loaded, because their SKILL.md does not start with the required header: ${brokenSkills.join(", ")}. Fix each one now: the file must start with\n---\nname: <folder name>\ndescription: <what it does and when to use it, one sentence>\n---`,
@@ -404,6 +421,27 @@ export default function (pi: ExtensionAPI) {
       const who = name.startsWith("coffre-") ? "Le coffre t'a laissé" : "La personne a déposé";
       enqueue("boîte", `[dot:boîte] ${stamp()}\n${who} « ${name} » dans la boîte :\n${cut(text)}`, { file: name });
     }
+  }
+
+  // Revue de budget : régulièrement, le dot regarde ce qu'il utilise vraiment et ajuste ce qui est
+  // déclaré au modèle. La première attend une période complète : il faut un usage représentatif.
+  function dueReview(at: Date) {
+    if (REVIEW_DAYS <= 0) return;
+    const state = loadState();
+    if (!state.nextReview) return changeState((s) => (s.nextReview = later(REVIEW_DAYS * 24 * 60)));
+    if (at < new Date(state.nextReview)) return;
+    changeState((s) => (s.nextReview = later(REVIEW_DAYS * 24 * 60)));
+    enqueue(
+      "revue",
+      [
+        `[dot:revue] ${stamp()}`,
+        "Revue de ton budget de contexte. Lance `budget` show, puis :",
+        "- passe en `deferred` les outils déclarés lourds et peu utilisés ces 30 jours ; remets en `direct` ceux que tu as dû chercher souvent ;",
+        "- allège tes skills trop longs (l'essentiel dans SKILL.md, les détails dans des fichiers à part) et ceux que tu n'utilises plus, supprime-les ;",
+        "- note avec `remember` ce que tu as changé et pourquoi.",
+        "Ne préviens la personne que si tu as changé quelque chose qui la concerne.",
+      ].join("\n"),
+    );
   }
 
   // Compte-rendu d'un run, ajouté à la conversation sans relancer le modèle.
@@ -549,6 +587,7 @@ export default function (pi: ExtensionAPI) {
     dueSchedules(at);
     dueWatches(at);
     inbox();
+    dueReview(at);
 
     const state = loadState();
     if (running || state.paused) return;
@@ -601,6 +640,93 @@ export default function (pi: ExtensionAPI) {
   });
 }
 
+// --- Budget de contexte ------------------------------------------------------------------------------
+
+const LOGS_DIR = join(HOME, "logs");
+const MCP_DEFAULTS = "/opt/dot/defaults/mcp.json";
+const MCP_FILE = join(process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent"), "mcp.json");
+
+function logEvents(days: number): any[] {
+  try {
+    return readdirSync(LOGS_DIR)
+      .filter((f) => f.endsWith(".jsonl"))
+      .sort()
+      .slice(-days)
+      .flatMap((f) => readFileSync(join(LOGS_DIR, f), "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// Premier démarrage avec le comptage : l'usage passé est repris du journal (outils appelés par les runs).
+function seedUsage() {
+  const usage: any = { tools: {}, skills: {} };
+  for (const e of logEvents(60)) {
+    if (e.type !== "run.end" || !e.tools) continue;
+    const d = String(e.t).slice(0, 10);
+    for (const [name, n] of Object.entries<number>(e.tools)) {
+      const daily = (usage.tools[name] ??= {});
+      daily[d] = (daily[d] ?? 0) + n;
+    }
+  }
+  writeJson(usageFile(MEMORY), usage);
+}
+
+function declared(pi: ExtensionAPI) {
+  const active = new Set((pi as any).getActiveTools?.() ?? []);
+  return pi.getAllTools().filter((t: any) => active.has(t.name));
+}
+
+// Une note fixe pour la session (le début du contexte reste identique d'un appel à l'autre).
+function budgetSection(pi: ExtensionAPI, ctx: any): string {
+  const model = ctx?.model;
+  const window = model?.contextWindow ?? ctx?.getContextUsage?.()?.contextWindow;
+  const tools = declared(pi);
+  const toolTokens = tools.reduce((n: number, t: any) => n + declaredTokens(t), 0);
+  return [
+    `Your context budget: model ${model ? `${model.provider}/${model.id}` : "unknown"}${window ? `, context window ${window} tokens` : ""}.`,
+    `Before you do anything, your instructions and the ${tools.length} tools declared to you take thousands of tokens (tools alone ≈ ${toolTokens}), on every single call. Every token costs time, and the model may run on the person's own hardware.`,
+    "Be frugal: keep skills short (the essentials in SKILL.md, details in separate files read only when needed), make scripts print only what you need, never paste large outputs, and keep rarely used tools deferred (`tool_search` loads them when needed).",
+    "`budget` shows what you really use (tools, skills, runs) and lets you choose what stays declared.",
+  ].join("\n");
+}
+
+function budgetReport(pi: ExtensionAPI, ctx: any): string {
+  const usage = readUsage(MEMORY);
+  const loadout = readLoadout(MEMORY);
+  const model = ctx?.model;
+  const ctxUsage = ctx?.getContextUsage?.();
+  const active = new Set((pi as any).getActiveTools?.() ?? []);
+  const rows = pi
+    .getAllTools()
+    .filter((t: any) => t.exposure !== "hidden")
+    .map((t: any) => ({ name: t.name, exposure: active.has(t.name) ? "direct" : loadout[t.name] ?? t.exposure, tokens: declaredTokens(t), ...uses(usage.tools[t.name]) }))
+    .sort((a: any, b: any) => b.tokens - a.tokens);
+  const declaredRows = rows.filter((r: any) => r.exposure === "direct");
+  const skills = existsSync(SKILLS_DIR)
+    ? readdirSync(SKILLS_DIR)
+        .filter((n) => existsSync(join(SKILLS_DIR, n, "SKILL.md")))
+        .map((n) => ({ name: n, tokens: Math.round(statSync(join(SKILLS_DIR, n, "SKILL.md")).size / 3.6), ...uses(usage.skills[n]) }))
+    : [];
+  const runs = logEvents(7).filter((e) => e.type === "run.end");
+  const tokens = (e: any) => (e.tokensIn ?? 0) + (e.tokensOut ?? 0);
+  const biggest = runs.slice().sort((a, b) => tokens(b) - tokens(a))[0];
+  const k = (n: number) => `${Math.round(n / 1000)}k`;
+  return [
+    `Model: ${model ? `${model.provider}/${model.id}` : "?"} · context window ${ctxUsage?.contextWindow ?? model?.contextWindow ?? "?"} · now used: ${ctxUsage?.tokens ?? "?"} tokens${ctxUsage?.percent != null ? ` (${Math.round(ctxUsage.percent)}%)` : ""}`,
+    `Declared tools: ${declaredRows.length}, ≈ ${declaredRows.reduce((n: number, r: any) => n + r.tokens, 0)} tokens on every call.`,
+    "",
+    "Tools (≈tokens when declared · calls in 30 days · last used):",
+    ...rows.map((r: any) => `- ${r.name} · ${r.exposure}${PROTECTED.has(r.name) ? " (base)" : ""} · ${r.tokens} · ${r.count} · ${r.last ?? "never"}`),
+    "",
+    `Skills (≈tokens of SKILL.md · uses in 30 days · last used):`,
+    ...(skills.length ? skills.map((r) => `- ${r.name} · ${r.tokens} · ${r.count} · ${r.last ?? "never"}`) : ["- none"]),
+    "",
+    `Work runs, last 7 days: ${runs.length}${runs.length ? `, ${k(runs.reduce((n, e) => n + tokens(e), 0) / runs.length)} tokens on average, biggest ${k(tokens(biggest))} (${String(biggest.label ?? "").slice(0, 80)})` : ""}`,
+  ].join("\n");
+}
+
 // --- Outils : les mêmes dans la conversation et dans les runs -------------------------------------
 
 const NOTIFY_MEMORY = join(MEMORY, "notify-recent.json");
@@ -621,7 +747,11 @@ function alreadySent(text: string): boolean {
 }
 
 function registerTools(pi: ExtensionAPI) {
-  pi.registerTool({
+  // Les outils du dot sont déclarés selon ses choix (loadout.json) ; ses outils de base, toujours.
+  const loadout = readLoadout(MEMORY);
+  const reg = (def: any) => pi.registerTool(loadout[def.name] === "deferred" && !PROTECTED.has(def.name) ? { ...def, exposure: "deferred" } : def);
+
+  reg({
     name: "notify",
     label: "notify",
     description:
@@ -646,7 +776,7 @@ function registerTools(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  reg({
     name: "remember",
     label: "remember",
     description:
@@ -665,7 +795,7 @@ function registerTools(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  reg({
     name: "forget",
     label: "forget",
     description: "Remove one outdated or wrong fact from your memory. `match` is a passage of that fact.",
@@ -678,7 +808,39 @@ function registerTools(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  reg({
+    name: "budget",
+    label: "budget",
+    description:
+      "Your context budget. action `show`: your model and context window, what each declared tool costs on every call, how often you really used each tool and skill (30 days), and the token cost of your recent work runs. " +
+      "action `set` (tools, exposure): choose what is declared to the model — `direct` (always declared) or `deferred` (not declared; `tool_search` loads it when you need it). Decide from real usage: defer heavy tools you rarely use, keep direct those you use often. Your base tools always stay direct. Takes effect from your next run.",
+    promptSnippet: "budget: see your real tool/skill usage and token costs, choose which tools stay declared",
+    parameters: Type.Object({
+      action: Type.String({ description: "show | set" }),
+      tools: Type.Optional(Type.Array(Type.String(), { description: "With set: tool names, e.g. mcp__playwright__browser_drag" })),
+      exposure: Type.Optional(Type.String({ description: "With set: direct | deferred" })),
+    }),
+    async execute(_id: string, args: any, _signal: any, _onUpdate: any, ctx: any) {
+      if (args.action === "show") return answer(budgetReport(pi, ctx));
+      if (args.action === "set") {
+        const exposure = args.exposure as Exposure;
+        if (exposure !== "direct" && exposure !== "deferred") return answer("exposure: direct or deferred.", true);
+        const known = new Set(pi.getAllTools().map((t: any) => t.name));
+        const names = (args.tools ?? []).map(String);
+        const unknown = names.filter((n: string) => !known.has(n));
+        if (!names.length || unknown.length) return answer(`tools: names from \`budget\` show${unknown.length ? ` (unknown: ${unknown.join(", ")})` : ""}.`, true);
+        const { applied, refused } = setExposure(MEMORY, names, exposure);
+        try {
+          if (existsSync(MCP_DEFAULTS)) writeFileSync(MCP_FILE, JSON.stringify(applyToMcp(JSON.parse(readFileSync(MCP_DEFAULTS, "utf8")), readLoadout(MEMORY)), null, 2) + "\n");
+        } catch {}
+        log("budget.set", { exposure, tools: applied, refused: refused.length ? refused : undefined });
+        return answer(`${exposure}: ${applied.join(", ") || "nothing"}${refused.length ? ` · refused (base tools stay direct): ${refused.join(", ")}` : ""}. Takes effect from your next run.`);
+      }
+      return answer("Unknown action: use show or set.", true);
+    },
+  });
+
+  reg({
     name: "secret",
     label: "secret",
     description:
@@ -727,7 +889,7 @@ function registerTools(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  reg({
     name: "objective",
     label: "objective",
     description:
@@ -796,7 +958,7 @@ function registerTools(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  reg({
     name: "todo",
     label: "todo",
     description:
@@ -874,7 +1036,7 @@ function registerTools(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  reg({
     name: "schedule",
     label: "schedule",
     description:
@@ -943,7 +1105,7 @@ function registerTools(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  reg({
     name: "watch",
     label: "watch",
     description:
