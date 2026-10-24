@@ -10,9 +10,11 @@ Un dot importé repart donc à neuf, avec ses accès et ses savoir-faire déjà 
   ./dot @nom export [fichier.dot]       par défaut dots/<nom>.dot
   ./dot import fichier.dot [nom]        crée dots/<nom>/ (par défaut : le nom d'origine)
 
-Le fichier contient les secrets en clair : garde-le comme un trousseau de clés.
+C'est un fichier JSON lisible : on peut l'ouvrir et le corriger dans un éditeur avant de l'importer.
+Il contient les secrets en clair : garde-le comme un trousseau de clés.
 """
 
+import base64
 import io
 import json
 import os
@@ -23,7 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DOTS = ROOT / "dots"
-FORMAT = 1
+FORMAT = 2  # 2 : un fichier JSON lisible ; 1 : l'ancienne archive (encore lue à l'import)
 # Extensions fournies par le dépôt : remises à chaque démarrage, inutile de les emporter.
 MANAGED = {"dot", "dot-telegram", "dot-local", "ctx-optimizer"}
 SKIP_DIRS = {"node_modules", "__pycache__", ".git"}
@@ -51,34 +53,43 @@ def collect(src: Path):
                     yield f"state/agent/{kind}/{path.relative_to(base)}", path
 
 
+def content(path: Path):
+    """Le contenu d'un fichier : du texte tel quel, sinon {"base64": …}."""
+    data = path.read_bytes()
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"base64": base64.b64encode(data).decode()}
+
+
 def export(name: str, target: str | None):
     src = dot_dir(name)
     if not (src / ".env").is_file():
         sys.exit(f"Pas de dot « {name} ».")
     out = Path(target) if target else DOTS / f"{name}.dot"
     out.parent.mkdir(parents=True, exist_ok=True)
-    files = list(collect(src))
-    manifest = {
+    read_json = lambda p: json.loads(p.read_text()) if p.is_file() else None
+    doc = {
         "format": FORMAT,
         "name": name,
-        "created": datetime.now(timezone.utc).isoformat(),
-        "skills": sorted({p.split("/")[3] for p, _ in files if p.startswith("state/agent/skills/")}),
-        "extensions": sorted({p.split("/")[3] for p, _ in files if p.startswith("state/agent/extensions/")}),
-        "secrets": sorted(json.loads((src / "config/vault.json").read_text()).get("secrets", {}).keys()) if (src / "config/vault.json").is_file() else [],
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "env": (src / ".env").read_text().splitlines(),
+        "models": read_json(src / "config/models.json"),
+        "vault": read_json(src / "config/vault.json") or {"secrets": {}, "allow": []},
+        "skills": {},
+        "extensions": {},
     }
+    for arc, path in collect(src):
+        parts = arc.split("/")
+        if parts[0] == "state":  # state/agent/<skills|extensions>/<nom>/<fichier…>
+            doc[parts[2]].setdefault(parts[3], {})["/".join(parts[4:]) or parts[3]] = content(path)
     tmp = out.with_suffix(".tmp")
-    with tarfile.open(tmp, "w:gz") as tar:
-        data = json.dumps(manifest, indent=2, ensure_ascii=False).encode()
-        info = tarfile.TarInfo("manifest.json")
-        info.size = len(data)
-        tar.addfile(info, io.BytesIO(data))
-        for arc, path in files:
-            tar.add(path, arcname=arc, recursive=False)
+    tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
     os.chmod(tmp, 0o600)  # il contient des secrets
     tmp.replace(out)
     print(f"Modèle « {name} » exporté dans {out}")
-    print(f"  skills : {', '.join(manifest['skills']) or 'aucun'} · extensions : {', '.join(manifest['extensions']) or 'aucune'} · secrets : {', '.join(manifest['secrets']) or 'aucun'}")
-    print("  Ce fichier contient les secrets en clair : garde-le comme un trousseau de clés.")
+    print(f"  skills : {', '.join(doc['skills']) or 'aucun'} · extensions : {', '.join(doc['extensions']) or 'aucune'} · secrets : {', '.join(doc['vault'].get('secrets', {})) or 'aucun'}")
+    print("  Fichier JSON lisible, avec les secrets en clair : garde-le comme un trousseau de clés.")
 
 
 def safe_members(tar: tarfile.TarFile):
@@ -92,28 +103,64 @@ def safe_members(tar: tarfile.TarFile):
             yield m
 
 
+def check_name(name: str, file: str) -> Path:
+    import re
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,30}", name) or name == "dot":
+        sys.exit(f"Nom invalide : « {name} » (minuscules, chiffres, tirets ; « dot » est réservé). Donne un autre nom : ./dot import {file} autre-nom")
+    target = DOTS / name
+    if target.exists():
+        sys.exit(f"Le dot « {name} » existe déjà. Donne un autre nom : ./dot import {file} autre-nom")
+    return target
+
+
+def write_files(base: Path, files: dict):
+    for rel, data in files.items():
+        p = Path(rel)
+        if p.is_absolute() or ".." in p.parts:
+            continue  # rien ne sort du dossier du dot
+        dest = base / p
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(base64.b64decode(data["base64"]) if isinstance(data, dict) else str(data).encode())
+
+
 def import_(file: str, name: str | None):
     path = Path(file)
     if not path.is_file() and (DOTS / file).is_file():
         path = DOTS / file
     if not path.is_file():
         sys.exit(f"Fichier introuvable : {file}")
-    with tarfile.open(path, "r:gz") as tar:
+    raw = path.read_bytes()
+    if raw[:2] == b"\x1f\x8b":  # format 1 : l'ancienne archive
+        with tarfile.open(path, "r:gz") as tar:
+            try:
+                manifest = json.load(tar.extractfile("manifest.json"))
+            except (KeyError, json.JSONDecodeError):
+                sys.exit("Ce n'est pas un fichier .dot (manifest.json absent).")
+            name = name or manifest["name"]
+            target = check_name(name, file)
+            target.mkdir(parents=True)
+            tar.extractall(target, members=list(safe_members(tar)), filter="data")
+        skills, secrets = manifest.get("skills", []), manifest.get("secrets", [])
+    else:
         try:
-            manifest = json.load(tar.extractfile("manifest.json"))
-        except (KeyError, json.JSONDecodeError):
-            sys.exit("Ce n'est pas un fichier .dot (manifest.json absent).")
-        if manifest.get("format") != FORMAT:
-            sys.exit(f"Format de fichier .dot inconnu : {manifest.get('format')}")
-        name = name or manifest["name"]
-        import re
-        if not re.fullmatch(r"[a-z][a-z0-9-]{0,30}", name) or name == "dot":
-            sys.exit(f"Nom invalide : « {name} » (minuscules, chiffres, tirets ; « dot » est réservé). Donne un autre nom : ./dot import {file} autre-nom")
-        target = DOTS / name
-        if target.exists():
-            sys.exit(f"Le dot « {name} » existe déjà. Donne un autre nom : ./dot import {file} autre-nom")
-        target.mkdir(parents=True)
-        tar.extractall(target, members=list(safe_members(tar)), filter="data")
+            doc = json.loads(raw)
+        except json.JSONDecodeError as e:
+            sys.exit(f"Ce n'est pas un fichier .dot lisible : {e}")
+        if doc.get("format") != FORMAT:
+            sys.exit(f"Format de fichier .dot inconnu : {doc.get('format')}")
+        name = name or doc.get("name", "")
+        target = check_name(name, file)
+        (target / "config").mkdir(parents=True)
+        (target / ".env").write_text("\n".join(doc.get("env", [])) + "\n")
+        if doc.get("models") is not None:
+            (target / "config/models.json").write_text(json.dumps(doc["models"], indent=2, ensure_ascii=False) + "\n")
+        (target / "config/vault.json").write_text(json.dumps(doc.get("vault") or {"secrets": {}, "allow": []}, indent=2, ensure_ascii=False) + "\n")
+        for kind in ("skills", "extensions"):
+            for item, files in (doc.get(kind) or {}).items():
+                if kind == "extensions" and item in MANAGED or "/" in item or item.startswith("."):
+                    continue
+                write_files(target / "state" / "agent" / kind / item, files)
+        skills, secrets = list(doc.get("skills") or {}), list((doc.get("vault") or {}).get("secrets", {}))
     # Un bot Telegram n'a qu'un lecteur : le dot importé démarre sans Telegram.
     env = target / ".env"
     if env.is_file():
@@ -123,7 +170,7 @@ def import_(file: str, name: str | None):
         os.chmod(target / "config/vault.json", 0o600)
     (target / "state").mkdir(exist_ok=True)
     print(f"Dot « {name} » créé depuis {path.name} (sans son passé, sans Telegram).")
-    print(f"  skills : {', '.join(manifest.get('skills', [])) or 'aucun'} · secrets : {', '.join(manifest.get('secrets', [])) or 'aucun'}")
+    print(f"  skills : {', '.join(skills) or 'aucun'} · secrets : {', '.join(secrets) or 'aucun'}")
     print(f"Lance-le avec : ./dot @{name} start")
 
 

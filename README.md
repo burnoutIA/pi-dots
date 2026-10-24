@@ -47,6 +47,8 @@ Un fichier `.dot` est un **modèle de dot** : sa configuration et ses savoir-fai
 | `.env`, `config/models.json`, `config/vault.json` (**secrets compris**) | sessions, mémoire, plan, journal |
 | ses skills et ses propres extensions | fichiers de travail, livrables, navigateur |
 
+C'est un **fichier JSON lisible** : la config (le `.env` ligne par ligne), les secrets, et chaque skill fichier par fichier. On peut l'ouvrir et le corriger dans un éditeur avant de l'importer.
+
 À l'import, le dot est créé sans Telegram (un bot n'a qu'un lecteur), et un nom déjà pris est refusé. Le fichier contient les secrets en clair : garde-le comme un trousseau de clés (il est créé lisible par toi seul, et `dots/` est hors git).
 
 Toutes les commandes ci-dessous s'appliquent au dot visé (`./dot @nom …`).
