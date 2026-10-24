@@ -79,6 +79,12 @@ def describe(e) -> str:
         return f"↓ événement {e.get('kind')} {detail}{late}"
     if t == "schedule.skipped":
         return f"⚠ tâche {e.get('schedule')} sautée (en retard de {e.get('lateMin')} min, sans rattrapage)"
+    if t == "memory.remember":
+        return f"🧠 retenu : {e.get('fact')}"
+    if t == "memory.forget":
+        return f"🧠 oublié : {e.get('match')}"
+    if t == "skills.broken":
+        return f"⚠ skills non chargés (en-tête manquant) : {', '.join(e.get('skills') or [])}"
     if t == "mail.read":
         return f"✉ coffre : mails lus ({e.get('action')} {e.get('folder', '')}, {e.get('count')}) sur {e.get('host')}"
     if t == "notify.blocked":

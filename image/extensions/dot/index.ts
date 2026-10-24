@@ -23,6 +23,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renam
 import { join } from "node:path";
 import { Type } from "typebox";
 import { log, pruneLogs } from "./log.ts";
+import { forget, readMemory, remember, skillProblems } from "./memory.ts";
 import { modelUnavailable, retryMinutes } from "./outage.ts";
 import { type Schedule, nextAfter } from "./schedule.ts";
 import { MEMORY, OPEN, type Plan, type Todo, type Work, newId, nextWork, now, objectiveBlock, readPlan, todoLine, updatePlan } from "./plan.ts";
@@ -164,6 +165,7 @@ function todoPrompt(plan: Plan, work: Extract<Work, { kind: "todo" }>): string {
     "- fini : `todo` done, avec le résultat ;",
     "- il te faut la personne (une information, une décision, un accès) : pose ta question avec `notify`, puis `todo` wait ;",
     "- il faut d'autres étapes : ajoute-les avec `todo` add.",
+    "Si tu as appris quelque chose de durable (comment marche un service, une décision de la personne), note-le avec `remember`.",
     "Ta réponse finale est un compte-rendu de deux ou trois lignes.",
   ].join("\n");
 }
@@ -184,7 +186,7 @@ function planPrompt(plan: Plan, work: Extract<Work, { kind: "plan" }>): string {
 }
 
 function eventPrompt(event: DotEvent): string {
-  return `${event.text}\n\nSi cela demande un travail suivi, crée un objectif (\`objective\` add) ou des todos plutôt que de tout faire maintenant. Ta réponse finale est un compte-rendu de deux ou trois lignes.`;
+  return `${event.text}\n\nSi cela demande un travail suivi, crée un objectif (\`objective\` add) ou des todos plutôt que de tout faire maintenant. Si tu as appris quelque chose de durable, note-le avec \`remember\`. Ta réponse finale est un compte-rendu de deux ou trois lignes.`;
 }
 
 // --- Un run de travail : un pi à part, dans la session donnée ------------------------------------
@@ -296,7 +298,7 @@ function memorySection(): string {
   const open = plan.objectives.filter((o) => o.status === "active" || o.status === "paused");
   const journal = read("JOURNAL.md").split("\n").slice(-25).join("\n");
   return [
-    `## MEMORY.md\n${read("MEMORY.md")}`,
+    `## MEMORY.md\n${readMemory(MEMORY).trim()}`,
     `## Objectifs en cours\n${open.length ? open.map((o) => objectiveBlock(plan, o, false)).join("\n\n") : "Aucun."}`,
     `## JOURNAL.md (fin)\n${journal}`,
   ].join("\n\n");
@@ -306,9 +308,12 @@ function memorySection(): string {
 
 export default function (pi: ExtensionAPI) {
   let atStart = "";
+  let brokenSkills: string[] = [];
   pi.on("session_start", () => {
     mkdirSync(MEMORY, { recursive: true });
     atStart = memorySection();
+    brokenSkills = skillProblems(join(process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent"), "skills"));
+    if (brokenSkills.length) log("skills.broken", { skills: brokenSkills });
   });
   pi.on("before_agent_start", (event: any) => {
     event.systemPromptOptions.sections = {
@@ -317,6 +322,11 @@ export default function (pi: ExtensionAPI) {
         ? "This is a work run: you were started on your own, on one precise job (described in the message). Nobody reads this run live. Do the job, keep the plan up to date with `todo` / `objective`, use `notify` only for what the person must know, and finish with a short report."
         : "This is your conversation with the person. Your work on objectives runs separately (one session per objective); its reports reach this conversation as `[dot:compte-rendu]` messages. To start some work, create an objective or todos: the work runs will take them up.",
       dot_memory: `Your persistent state, as it was when this session started (read /dot/memory again for the current version):\n\n${atStart}`,
+      ...(brokenSkills.length
+        ? {
+            dot_skills: `These skills of yours are NOT loaded, because their SKILL.md does not start with the required header: ${brokenSkills.join(", ")}. Fix each one now: the file must start with\n---\nname: <folder name>\ndescription: <what it does and when to use it, one sentence>\n---`,
+          }
+        : {}),
     };
   });
 
@@ -593,13 +603,14 @@ export default function (pi: ExtensionAPI) {
 
 // --- Outils : les mêmes dans la conversation et dans les runs -------------------------------------
 
-const MAX_NOTIFY_PER_RUN = num("DOT_MAX_NOTIFY", 3);
 const NOTIFY_MEMORY = join(MEMORY, "notify-recent.json");
-let notifyCount = 0; // un run de travail est un processus : le compteur vaut pour le run
 
-// Un message identique, déjà envoyé dans les 6 dernières heures, n'est pas renvoyé.
+// Rien de nouveau = rien à envoyer : un message qui redit la même chose (aux espaces, majuscules et
+// émojis près) qu'un message des 6 dernières heures n'est pas renvoyé. Le nombre de messages, lui,
+// n'est pas limité : une boucle est arrêtée par ailleurs (même appel répété dans un run).
 function alreadySent(text: string): boolean {
-  const hash = createHash("sha256").update(text).digest("hex");
+  const same = text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const hash = createHash("sha256").update(same).digest("hex");
   const limit = Date.now() - 6 * 3600_000;
   const recent = readJson<Record<string, number>>(NOTIFY_MEMORY, {});
   for (const [h, t] of Object.entries(recent)) if (t < limit) delete recent[h];
@@ -610,26 +621,20 @@ function alreadySent(text: string): boolean {
 }
 
 function registerTools(pi: ExtensionAPI) {
-  pi.on("agent_start", () => (notifyCount = 0)); // la limite vaut par demande traitée
   pi.registerTool({
     name: "notify",
     label: "notify",
     description:
-      "Send a message to the person (on Telegram when configured). Use it when you work on your own and have something worth their attention: a result, a question that blocks you, a decision they must take. Do not use it to say everything is fine.",
+      "Send a message to the person (on Telegram when configured), when you work on your own and have something NEW and useful for them: a result, a question that blocks you, a decision they must take. " +
+      "If there is nothing new or relevant, send nothing: never a message to say that nothing happened, that all is fine, or to repeat what they already know. Group what you have into one message. A message that repeats a recent one is not sent.",
     promptSnippet: "notify: send a message to the person while you work on your own",
     parameters: Type.Object({ text: Type.String({ description: "The message, short and self-contained" }) }),
     async execute(_id: string, args: any) {
       const text = String(args.text ?? "").trim();
       if (!text) return answer("Empty message.", true);
-      // Garde-fous, quel que soit le modèle : peu de messages par run, jamais deux fois le même.
-      notifyCount += 1;
-      if (notifyCount > MAX_NOTIFY_PER_RUN) {
-        log("notify.blocked", { reason: "trop de messages dans ce run", text: text.slice(0, 120) });
-        return answer(`Not sent: at most ${MAX_NOTIFY_PER_RUN} messages per run. Put everything in one message.`, true);
-      }
       if (alreadySent(text)) {
         log("notify.blocked", { reason: "déjà envoyé", text: text.slice(0, 120) });
-        return answer("Not sent: this exact message was already sent to the person recently. Do not send it again.", true);
+        return answer("Not sent: this says the same as a message sent to the person recently. Nothing new: do not send it again.", true);
       }
       log("notify", { text: text.slice(0, 300), channel: shared.send ? "telegram" : "file" });
       if (shared.send) {
@@ -638,6 +643,38 @@ function registerTools(pi: ExtensionAPI) {
       }
       appendFileSync(join(MEMORY, "NOTIFICATIONS.md"), `\n## ${stamp()}\n${text}\n`);
       return answer(`No messaging channel is configured: the message was written to ${join(MEMORY, "NOTIFICATIONS.md")}.`);
+    },
+  });
+
+  pi.registerTool({
+    name: "remember",
+    label: "remember",
+    description:
+      "Save one durable fact to your memory (/dot/memory/MEMORY.md), which every future session reads at start: the conversation and all your work runs. " +
+      "This is the only way what you learn in one session reaches the others. One short sentence, self-contained, in the person's language.",
+    promptSnippet: "remember: save a durable fact for all your future sessions",
+    promptGuidelines: [
+      "Use `remember` as soon as you learn something that will matter later: a decision or preference of the person, how one of their services works for you (which skill, which secret names, which server), what was abandoned and why.",
+      "Do not remember details of the current task, or things already in your memory. When a fact becomes wrong, `forget` it and remember the new one.",
+    ],
+    parameters: Type.Object({ fact: Type.String({ description: "One short sentence that stands on its own" }) }),
+    async execute(_id: string, args: any) {
+      const outcome = remember(MEMORY, String(args.fact ?? ""));
+      if (outcome.ok) log("memory.remember", { fact: String(args.fact).slice(0, 200) });
+      return answer(outcome.message, !outcome.ok);
+    },
+  });
+
+  pi.registerTool({
+    name: "forget",
+    label: "forget",
+    description: "Remove one outdated or wrong fact from your memory. `match` is a passage of that fact.",
+    promptSnippet: "forget: remove an outdated fact from your memory",
+    parameters: Type.Object({ match: Type.String({ description: "A passage of the fact to remove, precise enough to single it out" }) }),
+    async execute(_id: string, args: any) {
+      const outcome = forget(MEMORY, String(args.match ?? ""));
+      if (outcome.ok) log("memory.forget", { match: String(args.match).slice(0, 200) });
+      return answer(outcome.message, !outcome.ok);
     },
   });
 

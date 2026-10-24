@@ -106,7 +106,8 @@ Toutes les 15 s, un battement lit le plan **sans passer par le modèle**. Il ne 
   - un run est coupé après `DOT_RUN_MINUTES` ;
   - un même appel d'outil répété `DOT_LOOP_REPEATS` fois dans un run (à la suite ou non) arrête le run : c'est une boucle.
 - **Panne du modèle** : un run qui échoue parce que le modèle ne répond pas n'est pas compté comme un échec. Le travail attend, le dot te prévient une fois et réessaie de plus en plus espacé (2, 4, 8 puis 15 min), puis te prévient quand le modèle revient.
-- **`notify`** : le dot te prévient quand il travaille de lui-même (sur Telegram, ou dans `state/memory/NOTIFICATIONS.md`). Au plus `DOT_MAX_NOTIFY` messages (3) par demande, et jamais deux fois le même message en 6 heures.
+- **`notify`** : le dot te prévient quand il travaille de lui-même (sur Telegram, ou dans `state/memory/NOTIFICATIONS.md`). Pas de limite de nombre : le dot n'écrit que s'il a du nouveau. Un message qui redit la même chose qu'un message des 6 dernières heures n'est pas renvoyé.
+- **Mémoire** : `state/memory/MEMORY.md`, lue au début de chaque session (conversation et runs). Le dot y note avec `remember` ce qui doit servir d'une session à l'autre, et retire avec `forget` ce qui n'est plus vrai. Un skill mal formé (sans en-tête `name` / `description`, donc ignoré par pi) lui est signalé pour qu'il le corrige.
 
 ## Journal : savoir ce qui s'est passé
 

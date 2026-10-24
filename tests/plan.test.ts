@@ -64,3 +64,26 @@ test("panne du modèle : reconnue sur une erreur de connexion, pas sur un vrai �
   assert.equal(modelUnavailable({ ok: false, tokensOut: 0, toolCalls: 0, error: "run arrêté : boucle" }), false);
   assert.deepEqual([1, 2, 3, 4, 9].map(retryMinutes), [2, 4, 8, 15, 15]);
 });
+
+test("mémoire : remember ajoute une fois, forget retire, la taille est bornée", async () => {
+  const { remember, forget, readMemory } = await import(`${src}/extensions/dot/memory.ts`);
+  const { mkdtempSync } = await import("node:fs");
+  const d = mkdtempSync(join(tmpdir(), "dot-mem-"));
+  assert.equal(remember(d, "Les mails passent par iCloud.").ok, true);
+  assert.equal(remember(d, "les mails passent par icloud").message, "Already in memory.");
+  assert.match(readMemory(d), /- Les mails passent par iCloud\. _\(/);
+  assert.equal(forget(d, "passent par").ok, true);
+  assert.doesNotMatch(readMemory(d), /iCloud/);
+  assert.equal(remember(d, "x".repeat(9000)).ok, false);
+});
+
+test("skills : un SKILL.md sans en-tête name/description est signalé", async () => {
+  const { skillProblems } = await import(`${src}/extensions/dot/memory.ts`);
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const d = mkdtempSync(join(tmpdir(), "dot-skills-"));
+  mkdirSync(join(d, "bon"));
+  writeFileSync(join(d, "bon", "SKILL.md"), "---\nname: bon\ndescription: fait quelque chose\n---\n# Bon\n");
+  mkdirSync(join(d, "mauvais"));
+  writeFileSync(join(d, "mauvais", "SKILL.md"), "# Mauvais\nPas d'en-tête.\n");
+  assert.deepEqual(skillProblems(d), ["mauvais"]);
+});
