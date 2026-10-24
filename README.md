@@ -32,6 +32,23 @@ Un dépôt peut faire vivre plusieurs dots, chacun avec ses conteneurs, son rés
 
 Le dot `dot` garde ses fichiers à la racine du dépôt (`.env`, `config/`, `state/`) ; les autres vivent dans `dots/<nom>/` (hors git). Un nouveau dot ne reçoit du coffre d'origine que les secrets dont son modèle a besoin. Un bot Telegram n'ayant qu'un lecteur, chaque dot qui veut Telegram a son propre bot.
 
+### Un dot dans un seul fichier
+
+Un fichier `.dot` est un **modèle de dot** : sa configuration et ses savoir-faire, sans son passé.
+
+```bash
+./dot @travail export               # → dots/travail.dot
+./dot import dots/travail.dot neuf  # crée le dot « neuf » à partir du modèle
+./dot @neuf start
+```
+
+| Dans le fichier | Repart à neuf |
+|---|---|
+| `.env`, `config/models.json`, `config/vault.json` (**secrets compris**) | sessions, mémoire, plan, journal |
+| ses skills et ses propres extensions | fichiers de travail, livrables, navigateur |
+
+À l'import, le dot est créé sans Telegram (un bot n'a qu'un lecteur), et un nom déjà pris est refusé. Le fichier contient les secrets en clair : garde-le comme un trousseau de clés (il est créé lisible par toi seul, et `dots/` est hors git).
+
 Toutes les commandes ci-dessous s'appliquent au dot visé (`./dot @nom …`).
 
 ## Les commandes
@@ -50,6 +67,7 @@ Toutes les commandes ci-dessous s'appliquent au dot visé (`./dot @nom …`).
 | `./dot attach` | son terminal pi en direct (`Ctrl-b d` pour en sortir sans l'arrêter ; interface `tui`) |
 | `./dot rpc` | connecteur RPC (interface `rpc`) |
 | `./dot create`, `list`, `use`, `remove` | gérer plusieurs dots |
+| `./dot export`, `./dot import` | un dot dans un seul fichier (modèle) |
 | `./dot shell` | un shell dans son environnement |
 | `./dot journal` | ce qu'il a fait (`-p` problèmes, `-f` en direct, `--runs`, `--reseau`, ou une date) |
 | `./dot doctor` | diagnostic complet |
@@ -294,6 +312,7 @@ tools/suivre.py                 le run en cours, en direct
 tools/journal.py                lecture du journal
 image/hub.mjs                   le relais RPC (interface rpc)
 tools/rpc.py                    le connecteur RPC, côté machine
+tools/dotfile.py                export / import d'un dot en un seul fichier
 integrations/pi-skill-dots/     skill d'exemple : faire gérer des dots par un autre agent pi
 tests/                          tests automatiques
 ```

@@ -3,6 +3,7 @@
 #
 #   ./dot create nom      créer un dot (dots/nom/) ; ./dot remove nom --yes pour le supprimer
 #   ./dot list [--json]   les dots, et lesquels tournent ; ./dot use nom : le dot par défaut
+#   ./dot export / import un dot dans un seul fichier (modèle : config, secrets, skills, sans son passé)
 #   ./dot build           construire l'image (commune à tous les dots)
 #   ./dot start / stop    lancer (le coffre puis le dot) / arrêter ; l'état reste dans son dossier
 #   ./dot chat            parler au dot (ou ./dot ask "message")
@@ -168,6 +169,10 @@ PY
     if [ "$ENGINE" = podman ]; then podman unshare rm -rf "$(dot_dir "$gone")"; else rm -rf "$(dot_dir "$gone")"; fi
     [ -f "$CURRENT_FILE" ] && [ "$(cat "$CURRENT_FILE")" = "$gone" ] && rm -f "$CURRENT_FILE"
     echo "Dot « $gone » supprimé."
+    ;;
+  export|import)
+    # Un dot dans un seul fichier : sa configuration, ses secrets et ses savoir-faire, sans son passé.
+    python3 -I "$ROOT/tools/dotfile.py" "$@"
     ;;
   list)
     if [ "${2:-}" = "--json" ]; then
@@ -341,6 +346,6 @@ UNIT
     if running "$VAULT"; then echo "Son coffre tourne."; else echo "Son coffre ne tourne pas."; fi
     ;;
   *)
-    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 esac
