@@ -5,6 +5,9 @@
 #   ./dot start     lancer le coffre puis le dot (il reprend là où il en était)
 #   ./dot stop      tout arrêter (l'état reste dans state/)
 #   ./dot attach    rejoindre le terminal de pi (Ctrl-b d pour en sortir sans l'arrêter)
+#   ./dot chat      parler au dot depuis la machine (ou ./dot ask "message")
+#   ./dot send      lui déposer un fichier · ./dot livrables : ce qu'il a produit pour toi
+#   ./dot secret    répondre à une demande de secret du coffre
 #   ./dot shell     un shell dans l'environnement
 #   ./dot doctor    diagnostic complet (machine, coffre, modèle, Telegram, battement…)
 #   ./dot test      lancer les tests automatiques
@@ -82,7 +85,7 @@ case "${1:-}" in
     check_secrets
     $ENGINE image inspect "$IMAGE" >/dev/null 2>&1 || $ENGINE build -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT"
     # Créés ici, à l'utilisateur de la machine : sinon le moteur les crée lui-même, à un autre propriétaire.
-    mkdir -p "$ROOT/config" "$ROOT"/state/{agent,memory,inbox,workspace,browser,logs}
+    mkdir -p "$ROOT/config" "$ROOT"/state/{agent,memory,inbox,workspace,browser,logs,channel/in,channel/out,livrables}
     network "$NET_INTERNAL" --internal
     network "$NET_EXTERNAL"
     start_vault
@@ -153,6 +156,10 @@ case "${1:-}" in
     $ENGINE image inspect "$IMAGE" >/dev/null 2>&1 || $ENGINE build -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT"
     $ENGINE run --rm -v "$ROOT/image:/src:ro" -v "$ROOT/tests:/tests:ro" --entrypoint node "$IMAGE" --test "/tests/*.test.*"
     ;;
+  ask|chat|send|secret|livrables)
+    # Le canal local : le même que Telegram, depuis la machine. Les secrets vont directement au coffre.
+    DOT_ENGINE_BIN="$ENGINE" DOT_VAULT_NAME="$VAULT" python3 -I "$ROOT/tools/chat.py" "$@"
+    ;;
   journal)
     shift
     python3 -I "$ROOT/tools/journal.py" "$@"
@@ -166,6 +173,6 @@ case "${1:-}" in
     if running "$VAULT"; then echo "Le coffre tourne."; else echo "Le coffre ne tourne pas."; fi
     ;;
   *)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 esac

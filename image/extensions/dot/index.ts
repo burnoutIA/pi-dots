@@ -119,11 +119,22 @@ function shell(command: string): Promise<string> {
 // --- Partagé entre extensions (et survit au rechargement de session) ---------------------------------
 
 interface Shared {
-  send?: (text: string) => void; // posé par dot-telegram
+  senders?: Record<string, (text: string) => void>; // canaux vers la personne : telegram, local…
+  send: (text: string) => string[]; // envoie sur tous les canaux, renvoie leurs noms
   setPaused: (paused: boolean) => void;
   status: () => string;
 }
 const shared = ((globalThis as any).__dot ??= {}) as Shared;
+
+shared.send = (text) => {
+  const channels = Object.entries(shared.senders ?? {});
+  for (const [, send] of channels) {
+    try {
+      send(text);
+    } catch {}
+  }
+  return channels.map(([name]) => name);
+};
 
 shared.setPaused = (paused) => {
   changeState((s) => (s.paused = paused));
@@ -778,11 +789,9 @@ function registerTools(pi: ExtensionAPI) {
         log("notify.blocked", { reason: "déjà envoyé", text: text.slice(0, 120) });
         return answer("Not sent: this says the same as a message sent to the person recently. Nothing new: do not send it again.", true);
       }
-      log("notify", { text: text.slice(0, 300), channel: shared.send ? "telegram" : "file" });
-      if (shared.send) {
-        shared.send(text);
-        return answer("Sent to the person.");
-      }
+      const channels = shared.send(text);
+      log("notify", { text: text.slice(0, 300), channel: channels.join("+") || "file" });
+      if (channels.length) return answer("Sent to the person.");
       appendFileSync(join(MEMORY, "NOTIFICATIONS.md"), `\n## ${stamp()}\n${text}\n`);
       return answer(`No messaging channel is configured: the message was written to ${join(MEMORY, "NOTIFICATIONS.md")}.`);
     },

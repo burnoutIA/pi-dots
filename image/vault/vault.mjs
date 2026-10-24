@@ -300,6 +300,8 @@ async function telegram(method, params) {
 }
 
 function ask(resumed = false) {
+  // Sans Telegram, la personne répond depuis sa machine (./dot chat), qui interroge le coffre.
+  if (!vault.secrets[TELEGRAM_SECRET] || !Number.isInteger(OWNER)) return Promise.resolve();
   const intro = resumed ? ["(Le coffre a redémarré : je reprends la demande en cours.)"] : [];
   if (pending.type === "extend") {
     const text = [
@@ -376,6 +378,37 @@ async function finish(outcome) {
 
 const expired = () => pending && Date.now() - new Date(pending.created).getTime() > PENDING_MINUTES * 60_000;
 
+// Une réponse de la personne à la demande en cours, d'où qu'elle vienne (Telegram ou la machine).
+// Renvoie ce qu'il faut lui dire ensuite.
+async function answer(text) {
+  if (!pending) return "Aucune demande en cours.";
+  if (/^\/annuler\b/i.test(text)) {
+    await finish("cancelled");
+    return "Demande annulée : rien n'a été enregistré.";
+  }
+  if (pending.type === "extend") {
+    if (/^(oui|o|yes|y|ok)\b/i.test(text)) {
+      await finish("saved");
+      return "Accès élargi.";
+    }
+    if (/^(non|n|no)\b/i.test(text)) {
+      await finish("cancelled");
+      return "Refusé : rien n'a changé.";
+    }
+    return "Réponds oui ou non (ou /annuler).";
+  }
+  pending.values[pending.fields[pending.index].name] = text;
+  pending.index += 1;
+  if (pending.index < pending.fields.length) {
+    save();
+    await ask().catch(() => {});
+    return "Valeur reçue.";
+  }
+  const names = pending.fields.map((f) => f.name);
+  await finish("saved");
+  return `Enregistré dans le coffre : ${names.join(", ")}.`;
+}
+
 // La lecture des messages par le dot passe ici : les réponses de la personne à la demande en cours
 // sont retirées (le dot ne reçoit que le numéro du message), enregistrées, puis effacées du fil.
 async function intercept(body) {
@@ -389,24 +422,22 @@ async function intercept(body) {
     if (BOT_COMMAND.test(text)) continue;
     delete update.message;
     telegram("deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id }).catch(() => {});
-    if (/^\/annuler\b/i.test(text)) {
-      await finish("cancelled");
-      continue;
-    }
-    if (pending.type === "extend") {
-      if (/^(oui|o|yes|y|ok)\b/i.test(text)) await finish("saved");
-      else if (/^(non|n|no)\b/i.test(text)) await finish("cancelled");
-      else await telegram("sendMessage", { chat_id: OWNER, text: "Réponds oui ou non (ou /annuler)." }).catch(() => {});
-      continue;
-    }
-    pending.values[pending.fields[pending.index].name] = text;
-    pending.index += 1;
-    if (pending.index < pending.fields.length) {
-      save();
-      await ask().catch(() => {});
-    } else await finish("saved");
+    const wasExtend = pending.type === "extend";
+    const next = await answer(text);
+    // Une réponse invalide à un oui/non : on le redit sur Telegram (les autres suites y sont déjà envoyées).
+    if (wasExtend && pending?.type === "extend") await telegram("sendMessage", { chat_id: OWNER, text: next }).catch(() => {});
   }
   return JSON.stringify(json);
+}
+
+// La demande en cours, telle que la personne la voit (sans aucune valeur).
+function question() {
+  if (!pending) return null;
+  if (pending.type === "extend") {
+    return { id: pending.id, type: "extend", purpose: pending.purpose, names: pending.names, hosts: pending.hosts };
+  }
+  const field = pending.fields[pending.index];
+  return { id: pending.id, type: "values", purpose: pending.purpose, hosts: pending.hosts, readOnly: pending.readOnly, step: `${pending.index + 1}/${pending.fields.length}`, name: field.name, label: field.label, replaces: !!vault.secrets[field.name] };
 }
 
 async function readBody(req) {
@@ -424,9 +455,6 @@ async function startRequest(res, request) {
     const what = pending.type === "extend" ? pending.names : pending.fields.map((f) => f.name);
     return reply(res, 409, `une demande est déjà en cours (${what.join(", ")}) : attends sa réponse`);
   }
-  if (!vault.secrets[TELEGRAM_SECRET] || !Number.isInteger(OWNER)) {
-    return reply(res, 503, "le coffre ne peut pas joindre la personne (Telegram non configuré) : demande-lui d'ajouter ces secrets dans config/vault.json");
-  }
   pending = { id: randomBytes(3).toString("hex"), created: new Date().toISOString(), ...request };
   try {
     await ask();
@@ -436,7 +464,7 @@ async function startRequest(res, request) {
   }
   save();
   log("secret.requested", { request: pending.id, type: pending.type, names: pending.names ?? pending.fields.map((f) => f.name), hosts: pending.hosts, readOnly: pending.readOnly, purpose: pending.purpose });
-  return reply(res, 202, { id: pending.id, status: "demandé à la personne sur Telegram ; tu seras prévenu par ta boîte de dépôt" });
+  return reply(res, 202, { id: pending.id, status: "demandé à la personne (sur Telegram et sur sa machine) ; tu seras prévenu par ta boîte de dépôt" });
 }
 
 // Ce que le dot peut demander et consulter (jamais les valeurs).
@@ -564,5 +592,27 @@ server.listen(PORT, "0.0.0.0", () => {
   if (pending) (expired() ? finish("expired") : ask(true)).catch(() => {});
 });
 setInterval(() => expired() && finish("expired").catch(() => {}), 60_000).unref();
+
+// Porte d'administration, pour la personne depuis sa machine (./dot chat, ./dot secret) : elle
+// n'écoute que sur l'interface interne du coffre, que le dot ne peut pas joindre. La machine y
+// accède en entrant dans le conteneur du coffre. Une réponse n'y passe jamais par les fichiers du dot.
+const ADMIN_PORT = Number(process.env.VAULT_ADMIN_PORT ?? 8081);
+http
+  .createServer(async (req, res) => {
+    try {
+      if (expired()) await finish("expired");
+      if (req.method === "GET" && req.url === "/pending") return reply(res, 200, { pending: question() });
+      if (req.method === "POST" && req.url === "/answer") {
+        const body = await readBody(req);
+        if (!pending || body.id !== pending.id) return reply(res, 409, { message: "Cette demande n'est plus en cours.", pending: question() });
+        const message = await answer(String(body.text ?? "").trim());
+        return reply(res, 200, { message, pending: question() });
+      }
+      return reply(res, 404, "GET /pending, POST /answer");
+    } catch (error) {
+      reply(res, 500, error.message);
+    }
+  })
+  .listen(ADMIN_PORT, "127.0.0.1");
 
 for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => (log("vault.stop"), process.exit(0)));

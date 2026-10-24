@@ -146,6 +146,22 @@ Ce qui est noté :
 - **la vie du plan** (objectifs et todos créés, terminés, bloqués), les événements reçus et les `notify` ;
 - **le coffre** : accès refusés et erreurs, et chaque sortie réseau avec `--reseau`.
 
+## Parler au dot depuis ta machine
+
+Le canal local fait tout ce que fait Telegram, sans Telegram :
+
+```bash
+./dot ask "où en es-tu ?"            # une question, la réponse s'affiche
+./dot chat                            # une conversation : /status /pause /resume /new /send /secret /livrables /quit
+./dot send rapport.pdf "lis-le"       # lui déposer un fichier
+./dot livrables                       # ce qu'il a produit pour toi (state/livrables/)
+./dot secret                          # répondre à une demande de secret du coffre
+```
+
+- **Une seule conversation** : c'est la même que sur Telegram (même mémoire, même plan). Ses `notify` arrivent sur les deux canaux.
+- **Messages et fichiers** passent par `state/channel/`. Ce qu'il produit pour toi va dans `state/livrables/`, un dossier que tu ouvres aussi avec ton explorateur de fichiers.
+- **Les secrets ne passent jamais par `state/`** : `./dot chat` et `./dot secret` les remettent directement au coffre, par une porte d'administration qui n'écoute qu'à l'intérieur de son conteneur (le dot ne peut pas la joindre). La saisie ne s'affiche pas. Une demande apparaît sur Telegram et sur ta machine, et la première réponse l'emporte. Telegram est donc facultatif.
+
 ## Telegram
 
 - Ta réponse arrive quand c'est toi qui écris ; le reste du temps, le dot ne t'écrit qu'avec `notify`.

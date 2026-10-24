@@ -87,7 +87,7 @@ function releaseLock() {
 
 // Survit au remplacement de session (/new recharge l'extension, pas le processus).
 const shared = ((globalThis as any).__dotTelegram ??= { offset: 0, chat: 0 }) as { offset: number; chat: number };
-const dot = ((globalThis as any).__dot ??= {}) as { send?: (text: string) => void; setPaused?: (p: boolean) => void; status?: () => string };
+const dot = ((globalThis as any).__dot ??= {}) as { senders?: Record<string, (text: string) => void>; setPaused?: (p: boolean) => void; status?: () => string };
 
 function assistantText(m: any): string {
   if (m?.role !== "assistant") return "";
@@ -124,7 +124,7 @@ export default function (pi: ExtensionAPI) {
       sendQueue = sendQueue.then(() => tg("sendMessage", { chat_id: chat, text: part, disable_web_page_preview: true }).catch(() => {}));
     }
   }
-  dot.send = (text: string) => sendText(chatId(), text);
+  (dot.senders ??= {}).telegram = (text: string) => sendText(chatId(), text);
 
   // Dans un run de travail, on peut écrire à la personne (`notify`, `send_file`), mais seul le
   // pi de la conversation écoute le bot et lui renvoie ses réponses.

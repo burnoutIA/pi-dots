@@ -41,6 +41,7 @@ const telegram = http.createServer((req, res) => {
 
 let vault;
 let vaultPort;
+const adminPort = 40000 + Math.floor(Math.random() * 20000);
 const listen = (server) => new Promise((r) => server.listen(0, "127.0.0.1", () => r(server.address().port)));
 
 before(async () => {
@@ -61,7 +62,7 @@ before(async () => {
     }),
   );
   vault = spawn(process.execPath, [`${src}/vault/vault.mjs`], {
-    env: { ...process.env, VAULT_CONFIG: CONFIG, VAULT_LOGS: join(dir, "logs"), VAULT_INBOX: INBOX, VAULT_PORT: String(vaultPort), TELEGRAM_OWNER_ID: String(OWNER), VAULT_TELEGRAM_API: `http://127.0.0.1:${telegramPort}` },
+    env: { ...process.env, VAULT_CONFIG: CONFIG, VAULT_LOGS: join(dir, "logs"), VAULT_INBOX: INBOX, VAULT_PORT: String(vaultPort), TELEGRAM_OWNER_ID: String(OWNER), VAULT_TELEGRAM_API: `http://127.0.0.1:${telegramPort}`, VAULT_ADMIN_PORT: String(adminPort) },
     stdio: "ignore",
   });
   for (let i = 0; i < 50; i += 1) {
@@ -220,7 +221,7 @@ test("une demande en cours survit à un redémarrage du coffre", async () => {
   vault.kill();
   await new Promise((r) => setTimeout(r, 300));
   vault = spawn(process.execPath, [`${src}/vault/vault.mjs`], {
-    env: { ...process.env, VAULT_CONFIG: CONFIG, VAULT_LOGS: join(dir, "logs"), VAULT_INBOX: INBOX, VAULT_PORT: String(vaultPort), TELEGRAM_OWNER_ID: String(OWNER), VAULT_TELEGRAM_API: `http://127.0.0.1:${telegramPort}` },
+    env: { ...process.env, VAULT_CONFIG: CONFIG, VAULT_LOGS: join(dir, "logs"), VAULT_INBOX: INBOX, VAULT_PORT: String(vaultPort), TELEGRAM_OWNER_ID: String(OWNER), VAULT_TELEGRAM_API: `http://127.0.0.1:${telegramPort}`, VAULT_ADMIN_PORT: String(adminPort) },
     stdio: "ignore",
   });
   for (let i = 0; i < 50; i += 1) {
@@ -240,4 +241,23 @@ test("une demande en cours survit à un redémarrage du coffre", async () => {
   assert.equal(saved.secrets.PERSIST_A.value, "valeur-a");
   assert.equal(saved.secrets.PERSIST_B.value, "valeur-b");
   assert.equal(saved._pending, undefined);
+});
+
+test("depuis la machine : la demande se lit sans valeur, la réponse va directement au coffre", async () => {
+  const admin = (path, init) => fetch(`http://127.0.0.1:${adminPort}${path}`, init).then((r) => r.json());
+  await call("/_vault/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: [{ name: "LOCAL_A", label: "Identifiant" }, { name: "LOCAL_B", label: "Mot de passe" }], hosts: ["a.example.com"], purpose: "local" }) });
+  const first = (await admin("/pending")).pending;
+  assert.equal(first.name, "LOCAL_A");
+  assert.equal(first.step, "1/2");
+  const wrong = await fetch(`http://127.0.0.1:${adminPort}/answer`, { method: "POST", body: JSON.stringify({ id: "autre", text: "x" }) });
+  assert.equal(wrong.status, 409);
+  const step = await admin("/answer", { method: "POST", body: JSON.stringify({ id: first.id, text: "val-a" }) });
+  assert.equal(step.pending.name, "LOCAL_B");
+  assert.doesNotMatch(JSON.stringify(step), /val-a/, "la valeur ne revient jamais");
+  const done = await admin("/answer", { method: "POST", body: JSON.stringify({ id: first.id, text: "val-b" }) });
+  assert.match(done.message, /Enregistré/);
+  assert.equal(done.pending, null);
+  const saved = JSON.parse(readFileSync(CONFIG, "utf8")).secrets;
+  assert.equal(saved.LOCAL_A.value, "val-a");
+  assert.equal(saved.LOCAL_B.value, "val-b");
 });
