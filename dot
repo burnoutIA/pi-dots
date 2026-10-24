@@ -4,7 +4,8 @@
 #   ./dot build     construire l'image
 #   ./dot start     lancer le coffre puis le dot (il reprend là où il en était)
 #   ./dot stop      tout arrêter (l'état reste dans state/)
-#   ./dot attach    rejoindre le terminal de pi (Ctrl-b d pour en sortir sans l'arrêter)
+#   ./dot attach    rejoindre le terminal de pi (Ctrl-b d pour en sortir sans l'arrêter ; mode tui)
+#   ./dot rpc       connecteur RPC : remplace `pi --mode rpc` pour un client (mode rpc)
 #   ./dot suivre    voir le run en cours, en direct
 #   ./dot chat      parler au dot depuis la machine (ou ./dot ask "message")
 #   ./dot send      lui déposer un fichier · ./dot livrables : ce qu'il a produit pour toi
@@ -127,7 +128,15 @@ case "${1:-}" in
     ;;
   attach)
     running "$NAME" || { echo "Le dot ne tourne pas : ./dot start." >&2; exit 1; }
+    if [ "$(setting DOT_INTERFACE)" = "rpc" ]; then
+      echo "Ce dot est en mode RPC (DOT_INTERFACE=rpc) : pas de terminal. Utilise ./dot chat, ou un client RPC avec ./dot rpc." >&2; exit 1
+    fi
     $ENGINE exec -it "$NAME" tmux attach -t dot
+    ;;
+  rpc)
+    # Connecteur RPC : remplace `pi --mode rpc` pour un client (les options sont ignorées).
+    shift
+    exec python3 -I "$ROOT/tools/rpc.py" "$@"
     ;;
   shell)
     running "$NAME" || { echo "Le dot ne tourne pas : ./dot start." >&2; exit 1; }
@@ -214,6 +223,6 @@ UNIT
     if running "$VAULT"; then echo "Le coffre tourne."; else echo "Le coffre ne tourne pas."; fi
     ;;
   *)
-    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 esac

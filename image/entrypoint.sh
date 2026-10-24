@@ -56,9 +56,28 @@ settings.quietStartup ??= "header";
 fs.writeFileSync(file, JSON.stringify(settings, null, 2) + "\n");
 EOF
 
-# pi tourne dans tmux (on peut s'y rattacher avec `./dot attach`) et reprend sa dernière
-# conversation ; s'il s'arrête, il est relancé. Le conteneur vit tant que tmux vit.
 cd "$DOT_HOME/workspace"
+
+# L'interface du dot (DOT_INTERFACE) :
+#   - tui (par défaut) : pi dans tmux, on s'y rattache avec `./dot attach` ;
+#   - rpc : pi en mode RPC derrière le hub, joignable par le socket state/channel/rpc.sock
+#     (`./dot rpc`, ou tout client qui sait piloter `pi --mode rpc`).
+# Dans les deux cas, pi reprend sa dernière conversation et il est relancé s'il s'arrête.
+if [ "${DOT_INTERFACE:-tui}" = "rpc" ]; then
+  node /opt/dot/hub.mjs &
+  hub=$!
+  stop() {
+    dot_log "environment.stop"
+    kill -TERM "$hub" 2>/dev/null || true
+    wait "$hub" 2>/dev/null || true
+    exit 0
+  }
+  trap stop TERM INT
+  echo "dot démarré en mode RPC ($(date -Is)). Se connecter : ./dot rpc"
+  wait "$hub"
+  exit 0
+fi
+
 tmux new-session -d -s dot -x 200 -y 50 /opt/dot/run-pi.sh
 
 stop() {
