@@ -15,17 +15,15 @@ Il contient les secrets en clair : garde-le comme un trousseau de clés.
 """
 
 import base64
-import io
 import json
 import os
 import sys
-import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DOTS = ROOT / "dots"
-FORMAT = 2  # 2 : un fichier JSON lisible ; 1 : l'ancienne archive (encore lue à l'import)
+FORMAT = 2  # un fichier JSON lisible
 # Extensions fournies par le dépôt : remises à chaque démarrage, inutile de les emporter.
 MANAGED = {"dot", "dot-telegram", "dot-local", "ctx-optimizer"}
 SKIP_DIRS = {"node_modules", "__pycache__", ".git"}
@@ -92,17 +90,6 @@ def export(name: str, target: str | None):
     print("  Fichier JSON lisible, avec les secrets en clair : garde-le comme un trousseau de clés.")
 
 
-def safe_members(tar: tarfile.TarFile):
-    """Seulement ce qu'un modèle peut contenir, sans chemin qui sorte du dossier du dot."""
-    allowed = (".env", "config/models.json", "config/vault.json")
-    for m in tar.getmembers():
-        p = Path(m.name)
-        if m.name == "manifest.json" or p.is_absolute() or ".." in p.parts or not (m.isfile() or m.isdir()):
-            continue
-        if m.name in allowed or m.name.startswith(("state/agent/skills/", "state/agent/extensions/")):
-            yield m
-
-
 def check_name(name: str, file: str) -> Path:
     import re
     if not re.fullmatch(r"[a-z][a-z0-9-]{0,30}", name) or name == "dot":
@@ -130,37 +117,25 @@ def import_(file: str, name: str | None):
     if not path.is_file():
         sys.exit(f"Fichier introuvable : {file}")
     raw = path.read_bytes()
-    if raw[:2] == b"\x1f\x8b":  # format 1 : l'ancienne archive
-        with tarfile.open(path, "r:gz") as tar:
-            try:
-                manifest = json.load(tar.extractfile("manifest.json"))
-            except (KeyError, json.JSONDecodeError):
-                sys.exit("Ce n'est pas un fichier .dot (manifest.json absent).")
-            name = name or manifest["name"]
-            target = check_name(name, file)
-            target.mkdir(parents=True)
-            tar.extractall(target, members=list(safe_members(tar)), filter="data")
-        skills, secrets = manifest.get("skills", []), manifest.get("secrets", [])
-    else:
-        try:
-            doc = json.loads(raw)
-        except json.JSONDecodeError as e:
-            sys.exit(f"Ce n'est pas un fichier .dot lisible : {e}")
-        if doc.get("format") != FORMAT:
-            sys.exit(f"Format de fichier .dot inconnu : {doc.get('format')}")
-        name = name or doc.get("name", "")
-        target = check_name(name, file)
-        (target / "config").mkdir(parents=True)
-        (target / ".env").write_text("\n".join(doc.get("env", [])) + "\n")
-        if doc.get("models") is not None:
-            (target / "config/models.json").write_text(json.dumps(doc["models"], indent=2, ensure_ascii=False) + "\n")
-        (target / "config/vault.json").write_text(json.dumps(doc.get("vault") or {"secrets": {}, "allow": []}, indent=2, ensure_ascii=False) + "\n")
-        for kind in ("skills", "extensions"):
-            for item, files in (doc.get(kind) or {}).items():
-                if kind == "extensions" and item in MANAGED or "/" in item or item.startswith("."):
-                    continue
-                write_files(target / "state" / "agent" / kind / item, files)
-        skills, secrets = list(doc.get("skills") or {}), list((doc.get("vault") or {}).get("secrets", {}))
+    try:
+        doc = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        sys.exit(f"Ce n'est pas un fichier .dot lisible : {e}")
+    if doc.get("format") != FORMAT:
+        sys.exit(f"Format de fichier .dot inconnu : {doc.get('format')}")
+    name = name or doc.get("name", "")
+    target = check_name(name, file)
+    (target / "config").mkdir(parents=True)
+    (target / ".env").write_text("\n".join(doc.get("env", [])) + "\n")
+    if doc.get("models") is not None:
+        (target / "config/models.json").write_text(json.dumps(doc["models"], indent=2, ensure_ascii=False) + "\n")
+    (target / "config/vault.json").write_text(json.dumps(doc.get("vault") or {"secrets": {}, "allow": []}, indent=2, ensure_ascii=False) + "\n")
+    for kind in ("skills", "extensions"):
+        for item, files in (doc.get(kind) or {}).items():
+            if kind == "extensions" and item in MANAGED or "/" in item or item.startswith("."):
+                continue
+            write_files(target / "state" / "agent" / kind / item, files)
+    skills, secrets = list(doc.get("skills") or {}), list((doc.get("vault") or {}).get("secrets", {}))
     # Un bot Telegram n'a qu'un lecteur : le dot importé démarre sans Telegram.
     env = target / ".env"
     if env.is_file():
