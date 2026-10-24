@@ -650,7 +650,8 @@ function registerTools(pi: ExtensionAPI) {
       "e.g. `Authorization: Bearer {{API_TOKEN}}` or `Authorization: Basic {{basic:SERVICE_USER:SERVICE_PASSWORD}}`; for mail (IMAP, read-only): POST http://dot-vault:8080/_vault/mail (see `curl http://dot-vault:8080/`). A secret only goes to its allowed hosts. " +
       "action `list`: the secrets that exist (names, allowed hosts, read-only), never their values. " +
       "action `request`: ask the person for missing secrets; the vault asks them on Telegram, catches their answers before they reach you, stores them, " +
-      "and drops a note in your inbox when done. Give `secrets` (names in CAPITALS with a human label), `hosts` (where they may be sent), `read_only`, and `purpose`.",
+      "and drops a note in your inbox when done. Give `secrets` (names in CAPITALS with a human label), `hosts` (where they may be sent), `read_only`, and `purpose`. " +
+      "action `extend`: an existing secret must also go to other servers (e.g. the same account on another server of the service): give `secrets` (existing names), the extra `hosts` and `purpose`; the person answers yes or no.",
     promptSnippet: "secret: list the vault's secrets, or ask the person for a missing one (you never see values)",
     promptGuidelines: [
       "Never ask the person for a password, key or token in the conversation, and never look for one in your environment: use `secret` request.",
@@ -658,8 +659,8 @@ function registerTools(pi: ExtensionAPI) {
       "Ask for the narrowest `hosts` (e.g. *.example.com) and `read_only: true` unless writing is really needed.",
     ],
     parameters: Type.Object({
-      action: Type.String({ description: "list | request" }),
-      secrets: Type.Optional(Type.Array(Type.Object({ name: Type.String({ description: "NAME_IN_CAPITALS" }), label: Type.String({ description: "What it is, for the person (e.g. Identifiant du service)" }) }))),
+      action: Type.String({ description: "list | request | extend" }),
+      secrets: Type.Optional(Type.Array(Type.Object({ name: Type.String({ description: "NAME_IN_CAPITALS" }), label: Type.Optional(Type.String({ description: "What it is, for the person (e.g. Identifiant du service)" })) }))),
       hosts: Type.Optional(Type.Array(Type.String(), { description: "Servers the secrets may be sent to, e.g. *.example.com, api.example.com" })),
       read_only: Type.Optional(Type.Boolean({ description: "Only read requests may carry these secrets (default true)" })),
       purpose: Type.Optional(Type.String({ description: "What they are for, one sentence the person will read" })),
@@ -671,8 +672,8 @@ function registerTools(pi: ExtensionAPI) {
           const res = await fetch(`${vault}/_vault/secrets`, { signal: AbortSignal.timeout(10_000) });
           return answer(await res.text(), !res.ok);
         }
-        if (args.action === "request") {
-          const res = await fetch(`${vault}/_vault/request`, {
+        if (args.action === "request" || args.action === "extend") {
+          const res = await fetch(`${vault}/_vault/${args.action}`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ secrets: args.secrets, hosts: args.hosts, readOnly: args.read_only !== false, purpose: args.purpose }),
@@ -682,7 +683,7 @@ function registerTools(pi: ExtensionAPI) {
           log("secret.request", { status: res.status, names: (args.secrets ?? []).map((s: any) => s?.name), hosts: args.hosts });
           return answer(res.ok ? `${text}\nMark the todo that needs it as waiting; you will get a [dot:boîte] note when the person has answered.` : text, !res.ok);
         }
-        return answer("Unknown action: use list or request.", true);
+        return answer("Unknown action: use list, request or extend.", true);
       } catch (error: any) {
         return answer(`Vault unreachable: ${error.message}`, true);
       }

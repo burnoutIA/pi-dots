@@ -79,6 +79,8 @@ def describe(e) -> str:
         return f"↓ événement {e.get('kind')} {detail}{late}"
     if t == "schedule.skipped":
         return f"⚠ tâche {e.get('schedule')} sautée (en retard de {e.get('lateMin')} min, sans rattrapage)"
+    if t == "mail.read":
+        return f"✉ coffre : mails lus ({e.get('action')} {e.get('folder', '')}, {e.get('count')}) sur {e.get('host')}"
     if t == "notify.blocked":
         return f"⛔ notify bloqué ({e.get('reason')}) : {e.get('text', '')[:80]}"
     if t == "model.down":
@@ -89,6 +91,10 @@ def describe(e) -> str:
         return f"🔐 secret demandé à la personne : {', '.join(e.get('names') or [])} → {', '.join(e.get('hosts') or [])} · {e.get('purpose', '')}"
     if t == "secret.saved":
         return f"🔐 secret enregistré : {', '.join(e.get('names') or [])} → {', '.join(e.get('hosts') or [])}{' (lecture seule)' if e.get('readOnly') else ''}"
+    if t == "secret.extended":
+        return f"🔐 accès élargi : {', '.join(e.get('names') or [])} → + {', '.join(e.get('hosts') or [])}"
+    if t == "secret.expired":
+        return f"🔐 demande de secret expirée sans réponse : {', '.join(e.get('names') or [])}"
     if t == "secret.cancelled":
         return f"🔐 demande de secret refusée par la personne : {', '.join(e.get('names') or [])}"
     if t in ("secret.request", "oauth.refresh"):

@@ -177,3 +177,67 @@ test("/annuler annule la demande sans rien enregistrer", async () => {
   assert.equal(JSON.parse(readFileSync(CONFIG, "utf8")).secrets.CANCELLED, undefined);
   assert.match(sent.at(-1), /annulée/);
 });
+
+test("élargir un secret : oui ajoute le serveur, et rien ne fuit vers le dot", async () => {
+  const res = await call("/_vault/extend", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["KEY"], hosts: ["api.example.com"], purpose: "autre serveur du service" }) });
+  assert.equal(res.status, 202);
+  assert.match(sent.at(-1), /oui ou non/);
+  updates = [fromOwner(5, "peut-être")];
+  assert.equal((await poll()).result[0].message, undefined);
+  assert.match(sent.at(-1), /oui ou non/);
+  updates = [fromOwner(6, "oui")];
+  await poll();
+  await new Promise((r) => setTimeout(r, 200));
+  assert.deepEqual(JSON.parse(readFileSync(CONFIG, "utf8")).secrets.KEY.hosts, [`127.0.0.1:${servicePort}`, "api.example.com"]);
+  assert.match(sent.at(-1), /élargi/);
+});
+
+test("élargir un secret inconnu est refusé ; non n'ajoute rien", async () => {
+  assert.equal((await call("/_vault/extend", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["NOPE"], hosts: ["a.example.com"], purpose: "x" }) })).status, 400);
+  await call("/_vault/extend", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["USER"], hosts: ["b.example.com"], purpose: "x" }) });
+  updates = [fromOwner(7, "non")];
+  await poll();
+  await new Promise((r) => setTimeout(r, 200));
+  assert.ok(!JSON.parse(readFileSync(CONFIG, "utf8")).secrets.USER.hosts.includes("b.example.com"));
+});
+
+test("pendant une demande, les commandes du bot passent au dot", async () => {
+  await call("/_vault/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["CMD_TEST"], hosts: ["a.example.com"], purpose: "x" }) });
+  updates = [fromOwner(8, "/status")];
+  assert.equal((await poll()).result[0].message.text, "/status");
+  updates = [fromOwner(9, "/annuler")];
+  await poll();
+  await new Promise((r) => setTimeout(r, 200));
+});
+
+test("une demande en cours survit à un redémarrage du coffre", async () => {
+  await call("/_vault/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["PERSIST_A", "PERSIST_B"], hosts: ["a.example.com"], purpose: "redémarrage" }) });
+  updates = [fromOwner(10, "valeur-a")];
+  await poll();
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(JSON.parse(readFileSync(CONFIG, "utf8"))._pending.index, 1);
+  // Redémarrage : nouveau coffre sur le même fichier.
+  vault.kill();
+  await new Promise((r) => setTimeout(r, 300));
+  vault = spawn(process.execPath, [`${src}/vault/vault.mjs`], {
+    env: { ...process.env, VAULT_CONFIG: CONFIG, VAULT_LOGS: join(dir, "logs"), VAULT_INBOX: INBOX, VAULT_PORT: String(vaultPort), TELEGRAM_OWNER_ID: String(OWNER), VAULT_TELEGRAM_API: `http://127.0.0.1:${telegramPort}` },
+    stdio: "ignore",
+  });
+  for (let i = 0; i < 50; i += 1) {
+    try {
+      await fetch(`http://127.0.0.1:${vaultPort}/`);
+      break;
+    } catch {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  await new Promise((r) => setTimeout(r, 300));
+  assert.match(sent.at(-1), /redémarré/);
+  updates = [fromOwner(11, "valeur-b")];
+  await poll();
+  await new Promise((r) => setTimeout(r, 200));
+  const saved = JSON.parse(readFileSync(CONFIG, "utf8"));
+  assert.equal(saved.secrets.PERSIST_A.value, "valeur-a");
+  assert.equal(saved.secrets.PERSIST_B.value, "valeur-b");
+  assert.equal(saved._pending, undefined);
+});

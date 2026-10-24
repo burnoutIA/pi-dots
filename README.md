@@ -66,6 +66,10 @@ Tu n'as pas à éditer `vault.json`. Quand il manque un secret au dot pour faire
 2. Tu réponds dans Telegram, ou tu tapes `/annuler`. Le coffre intercepte ta réponse avant qu'elle n'atteigne le dot, l'enregistre et **efface ton message du fil**.
 3. Le coffre te confirme l'enregistrement et prévient le dot par sa boîte de dépôt. Il n'y a rien à redémarrer.
 
+Pour qu'un secret existant serve aussi vers un autre serveur, le dot demande un **élargissement** : tu réponds simplement oui ou non.
+
+Une demande à la fois ; elle survit à un redémarrage du coffre et expire au bout de 30 minutes sans réponse. Pendant une demande, les commandes du bot (`/status`, `/new`, `/pause`, `/resume`) passent normalement au dot.
+
 Limite : un service qui exige une autorisation dans un navigateur (OAuth) ne se configure pas par Telegram ; son secret s'ajoute à la main dans `vault.json`.
 
 Ce que le coffre ne protège pas : ce que le dot voit ou fait avec ses accès. Donne-lui des comptes et des droits à sa mesure (lecture seule quand c'est possible, son propre compte git…).
@@ -99,8 +103,10 @@ Toutes les 15 s, un battement lit le plan **sans passer par le modèle**. Il ne 
 - **Garde-fous** :
   - un todo non terminé après `DOT_MAX_RUNS` runs passe en attente, et le dot te demande de l'aide ;
   - un plan qui ne change rien n'est réexaminé qu'après `DOT_RECHECK_MINUTES` ;
-  - un run est coupé après `DOT_RUN_MINUTES`.
-- **`notify`** : le dot te prévient quand il travaille de lui-même (sur Telegram, ou dans `state/memory/NOTIFICATIONS.md`).
+  - un run est coupé après `DOT_RUN_MINUTES` ;
+  - un même appel d'outil répété `DOT_LOOP_REPEATS` fois dans un run (à la suite ou non) arrête le run : c'est une boucle.
+- **Panne du modèle** : un run qui échoue parce que le modèle ne répond pas n'est pas compté comme un échec. Le travail attend, le dot te prévient une fois et réessaie de plus en plus espacé (2, 4, 8 puis 15 min), puis te prévient quand le modèle revient.
+- **`notify`** : le dot te prévient quand il travaille de lui-même (sur Telegram, ou dans `state/memory/NOTIFICATIONS.md`). Au plus `DOT_MAX_NOTIFY` messages (3) par demande, et jamais deux fois le même message en 6 heures.
 
 ## Journal : savoir ce qui s'est passé
 
@@ -114,6 +120,10 @@ Le dot tient un journal technique horodaté, avec un fichier par jour dans `stat
 ./dot journal --runs        # un run par ligne : début, fin, durée, résultat
 ./dot journal --reseau      # avec chaque sortie réseau vue par le coffre
 ```
+
+## Tests
+
+`./dot test` lance les tests automatiques dans l'image, sur le code du dépôt : le plan, les échéances, la détection de panne du modèle, et le coffre de bout en bout (avec un faux service et un faux Telegram).
 
 Ce qui est noté :
 - **les runs** : début, fin, durée, tours, outils appelés, jetons, erreur éventuelle ;

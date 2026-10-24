@@ -62,6 +62,7 @@ let vault = { secrets: {}, allow: [] };
 function load() {
   const raw = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));
   vault = { secrets: raw.secrets ?? {}, allow: raw.allow ?? [] };
+  pending = raw._pending ?? null;
   for (const [name, secret] of Object.entries(vault.secrets)) {
     if (!NAME.test(name)) throw new Error(`nom de secret invalide : ${name} (MAJUSCULES_ET_CHIFFRES)`);
     if (!Array.isArray(secret.hosts) || !secret.hosts.length) throw new Error(`secret ${name} : « hosts » manquant (où il a le droit d'aller)`);
@@ -70,7 +71,7 @@ function load() {
 }
 function save() {
   // Écrit en place : le fichier est monté depuis la machine hôte (pas de renommage possible).
-  writeFileSync(CONFIG_FILE, JSON.stringify(vault, null, 2) + "\n");
+  writeFileSync(CONFIG_FILE, JSON.stringify(pending ? { ...vault, _pending: pending } : vault, null, 2) + "\n");
 }
 
 // Motifs de serveur : « api.example.com », « host:8080 », « *.example.com ».
@@ -275,7 +276,14 @@ async function relay(req, res, scheme, rest, search) {
 
 // --- Demandes de secrets, par Telegram ----------------------------------------------------------
 
-let pending = null; // { id, fields: [{ name, label }], index, values, hosts, readOnly, purpose }
+// La demande en cours (une à la fois). Elle est gardée dans vault.json : un redémarrage du coffre
+// ne la perd pas. Deux sortes :
+//   - values : la personne envoie une valeur par secret ;
+//   - extend : la personne répond oui ou non pour élargir les serveurs d'un secret existant.
+let pending = null; // { id, type, fields, index, values, hosts, readOnly, purpose, names, created }
+const PENDING_MINUTES = Number(process.env.VAULT_PENDING_MINUTES ?? 30);
+// Commandes du bot qui ne sont jamais prises pour une réponse : elles vont au dot.
+const BOT_COMMAND = /^\/(status|new|pause|resume|start)\b/i;
 
 async function telegram(method, params) {
   const token = vault.secrets[TELEGRAM_SECRET]?.value;
@@ -291,11 +299,26 @@ async function telegram(method, params) {
   return json.result;
 }
 
-function ask() {
+function ask(resumed = false) {
+  const intro = resumed ? ["(Le coffre a redémarré : je reprends la demande en cours.)"] : [];
+  if (pending.type === "extend") {
+    const text = [
+      ...intro,
+      "🔐 Le dot demande d'élargir un accès. Ta réponse est lue par le coffre, pas par le dot.",
+      `Secrets : ${pending.names.join(", ")}`,
+      `Aujourd'hui autorisés vers : ${[...new Set(pending.names.flatMap((n) => vault.secrets[n]?.hosts ?? []))].join(", ")}`,
+      `Demandé en plus : ${pending.hosts.join(", ")}`,
+      `Pour : ${pending.purpose}`,
+      "",
+      "Réponds oui ou non.",
+    ].join("\n");
+    return telegram("sendMessage", { chat_id: OWNER, text });
+  }
   const field = pending.fields[pending.index];
   const head =
-    pending.index === 0
+    pending.index === 0 || resumed
       ? [
+          ...intro,
           "🔐 Le dot demande un accès. Tes réponses sont lues par le coffre, pas par le dot, puis effacées de ce fil.",
           `Pour : ${pending.purpose}`,
           `Envoyé uniquement à : ${pending.hosts.join(", ")}`,
@@ -315,14 +338,28 @@ function tellDot(id, text) {
   } catch {}
 }
 
-async function finish(cancelled) {
+// outcome : saved | cancelled | expired
+async function finish(outcome) {
   const request = pending;
   pending = null;
-  const names = request.fields.map((f) => f.name);
-  if (cancelled) {
-    log("secret.cancelled", { request: request.id, names });
-    tellDot(request.id, `La personne a refusé la demande de secrets ${names.join(", ")} (${request.purpose}). Ne la répète pas sans qu'elle te le demande.`);
-    await telegram("sendMessage", { chat_id: OWNER, text: "Demande annulée : rien n'a été enregistré." }).catch(() => {});
+  const names = request.type === "extend" ? request.names : request.fields.map((f) => f.name);
+  if (outcome !== "saved") {
+    save();
+    const why = outcome === "expired" ? `sans réponse depuis ${PENDING_MINUTES} min` : "refusée par la personne";
+    log(outcome === "expired" ? "secret.expired" : "secret.cancelled", { request: request.id, type: request.type, names });
+    tellDot(request.id, `La demande (${request.type === "extend" ? "élargir" : "secrets"} ${names.join(", ")} — ${request.purpose}) est ${why}. Ne la répète pas sans que la personne te le demande.`);
+    await telegram("sendMessage", { chat_id: OWNER, text: outcome === "expired" ? "Demande expirée : rien n'a été enregistré." : "Demande annulée : rien n'a été enregistré." }).catch(() => {});
+    return;
+  }
+  if (request.type === "extend") {
+    for (const name of names) {
+      const secret = vault.secrets[name];
+      if (secret) secret.hosts = [...new Set([...secret.hosts, ...request.hosts])];
+    }
+    save();
+    log("secret.extended", { request: request.id, names, hosts: request.hosts });
+    tellDot(request.id, `La personne a accepté : ${names.join(", ")} peuvent maintenant aussi aller vers ${request.hosts.join(", ")}.`);
+    await telegram("sendMessage", { chat_id: OWNER, text: `✅ Accès élargi : ${names.join(", ")} → ${request.hosts.join(", ")}.` }).catch(() => {});
     return;
   }
   for (const field of request.fields) {
@@ -337,69 +374,105 @@ async function finish(cancelled) {
   await telegram("sendMessage", { chat_id: OWNER, text: `✅ Enregistré dans le coffre : ${names.join(", ")}. Tes messages ont été effacés de ce fil.` }).catch(() => {});
 }
 
+const expired = () => pending && Date.now() - new Date(pending.created).getTime() > PENDING_MINUTES * 60_000;
+
 // La lecture des messages par le dot passe ici : les réponses de la personne à la demande en cours
 // sont retirées (le dot ne reçoit que le numéro du message), enregistrées, puis effacées du fil.
 async function intercept(body) {
   const json = JSON.parse(body);
   if (!json.ok || !Array.isArray(json.result)) return body;
+  if (expired()) await finish("expired");
   for (const update of json.result) {
     const msg = update.message;
     if (!pending || !msg || msg.chat?.type !== "private" || msg.from?.id !== OWNER || typeof msg.text !== "string") continue;
+    const text = msg.text.trim();
+    if (BOT_COMMAND.test(text)) continue;
     delete update.message;
     telegram("deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id }).catch(() => {});
-    if (/^\/annuler\b/i.test(msg.text.trim())) {
-      await finish(true);
+    if (/^\/annuler\b/i.test(text)) {
+      await finish("cancelled");
       continue;
     }
-    pending.values[pending.fields[pending.index].name] = msg.text.trim();
+    if (pending.type === "extend") {
+      if (/^(oui|o|yes|y|ok)\b/i.test(text)) await finish("saved");
+      else if (/^(non|n|no)\b/i.test(text)) await finish("cancelled");
+      else await telegram("sendMessage", { chat_id: OWNER, text: "Réponds oui ou non (ou /annuler)." }).catch(() => {});
+      continue;
+    }
+    pending.values[pending.fields[pending.index].name] = text;
     pending.index += 1;
-    if (pending.index < pending.fields.length) await ask().catch(() => {});
-    else await finish(false);
+    if (pending.index < pending.fields.length) {
+      save();
+      await ask().catch(() => {});
+    } else await finish("saved");
   }
   return JSON.stringify(json);
+}
+
+async function readBody(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+// Pas de joker trop large : « *.example.com » oui, « * » ou « *.com » non.
+const HOST = /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?$|^[a-z0-9-]+(\.[a-z0-9-]+)*:\d+$/;
+const HOSTS_HELP = "hosts : les serveurs où ces secrets auront le droit d'aller (ex. *.example.com, api.example.com, host.docker.internal:8080)";
+
+async function startRequest(res, request) {
+  if (pending) {
+    const what = pending.type === "extend" ? pending.names : pending.fields.map((f) => f.name);
+    return reply(res, 409, `une demande est déjà en cours (${what.join(", ")}) : attends sa réponse`);
+  }
+  if (!vault.secrets[TELEGRAM_SECRET] || !Number.isInteger(OWNER)) {
+    return reply(res, 503, "le coffre ne peut pas joindre la personne (Telegram non configuré) : demande-lui d'ajouter ces secrets dans config/vault.json");
+  }
+  pending = { id: randomBytes(3).toString("hex"), created: new Date().toISOString(), ...request };
+  try {
+    await ask();
+  } catch (error) {
+    pending = null;
+    return reply(res, 502, `message à la personne impossible : ${error.message}`);
+  }
+  save();
+  log("secret.requested", { request: pending.id, type: pending.type, names: pending.names ?? pending.fields.map((f) => f.name), hosts: pending.hosts, readOnly: pending.readOnly, purpose: pending.purpose });
+  return reply(res, 202, { id: pending.id, status: "demandé à la personne sur Telegram ; tu seras prévenu par ta boîte de dépôt" });
 }
 
 // Ce que le dot peut demander et consulter (jamais les valeurs).
 async function control(req, res, path) {
   if (req.method === "GET" && path === "secrets") {
     const list = Object.entries(vault.secrets).map(([name, s]) => ({ name, hosts: s.hosts, readOnly: !!s.readOnly, kind: s.oauth ? "oauth" : "valeur" }));
-    return reply(res, 200, { secrets: list, pending: pending ? { id: pending.id, names: pending.fields.map((f) => f.name) } : null });
+    const waiting = pending ? { id: pending.id, type: pending.type, names: pending.names ?? pending.fields.map((f) => f.name) } : null;
+    return reply(res, 200, { secrets: list, pending: waiting });
   }
-  if (req.method === "POST" && path === "request") {
-    const chunks = [];
-    for await (const c of req) chunks.push(c);
+  if (req.method === "POST" && (path === "request" || path === "extend")) {
     let body;
     try {
-      body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      body = await readBody(req);
     } catch {
       return reply(res, 400, "corps JSON attendu");
     }
-    const fields = (body.secrets ?? []).map((f) => (typeof f === "string" ? { name: f, label: f } : { name: f?.name, label: f?.label || f?.name }));
     const hosts = (body.hosts ?? []).map((h) => String(h).toLowerCase().trim()).filter(Boolean);
+    if (!hosts.length || hosts.some((h) => !HOST.test(h))) return reply(res, 400, HOSTS_HELP);
+    if (!body.purpose) return reply(res, 400, "purpose : à quoi serviront ces secrets, en une phrase pour la personne");
+    const purpose = String(body.purpose).slice(0, 300);
+
+    if (path === "extend") {
+      const names = (body.secrets ?? []).map((f) => (typeof f === "string" ? f : f?.name));
+      const missing = names.filter((n) => !vault.secrets[n]);
+      if (!names.length || missing.length) return reply(res, 400, `secrets : des noms de secrets existants${missing.length ? ` (inconnus : ${missing.join(", ")})` : ""}`);
+      if (names.includes(TELEGRAM_SECRET)) return reply(res, 400, `${TELEGRAM_SECRET} ne s'élargit pas`);
+      return startRequest(res, { type: "extend", names, hosts, purpose });
+    }
+
+    const fields = (body.secrets ?? []).map((f) => (typeof f === "string" ? { name: f, label: f } : { name: f?.name, label: f?.label || f?.name }));
     if (!fields.length || fields.some((f) => !NAME.test(String(f.name)))) return reply(res, 400, "secrets : une liste de noms en MAJUSCULES (ex. SERVICE_USER), chacun avec un label lisible");
     if (fields.some((f) => f.name === TELEGRAM_SECRET)) return reply(res, 400, `${TELEGRAM_SECRET} ne se demande pas par Telegram`);
-    // Pas de joker trop large : « *.example.com » oui, « * » ou « *.com » non.
-    const HOST = /^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?$|^[a-z0-9-]+(\.[a-z0-9-]+)*:\d+$/;
-    if (!hosts.length || hosts.some((h) => !HOST.test(h))) {
-      return reply(res, 400, "hosts : les serveurs où ces secrets auront le droit d'aller (ex. *.example.com, api.example.com, host.docker.internal:8080)");
-    }
-    if (!body.purpose) return reply(res, 400, "purpose : à quoi serviront ces secrets, en une phrase pour la personne");
-    if (pending) return reply(res, 409, `une demande est déjà en cours (${pending.fields.map((f) => f.name).join(", ")}) : attends sa réponse`);
-    if (!vault.secrets[TELEGRAM_SECRET] || !Number.isInteger(OWNER)) {
-      return reply(res, 503, "le coffre ne peut pas joindre la personne (Telegram non configuré) : demande-lui d'ajouter ces secrets dans config/vault.json");
-    }
-    pending = { id: randomBytes(3).toString("hex"), fields, index: 0, values: {}, hosts, readOnly: body.readOnly !== false, purpose: String(body.purpose).slice(0, 300) };
-    try {
-      await ask();
-    } catch (error) {
-      pending = null;
-      return reply(res, 502, `message à la personne impossible : ${error.message}`);
-    }
-    log("secret.requested", { request: pending.id, names: fields.map((f) => f.name), hosts, readOnly: pending.readOnly, purpose: pending.purpose });
-    return reply(res, 202, { id: pending.id, status: "demandé à la personne sur Telegram ; tu seras prévenu par ta boîte de dépôt" });
+    return startRequest(res, { type: "values", fields, index: 0, values: {}, hosts, readOnly: body.readOnly !== false, purpose });
   }
   if (req.method === "POST" && path === "mail") return mail(req, res);
-  return reply(res, 404, "GET /_vault/secrets, POST /_vault/request, POST /_vault/mail");
+  return reply(res, 404, "GET /_vault/secrets, POST /_vault/request, POST /_vault/extend, POST /_vault/mail");
 }
 
 // Lecture des mails (IMAP, lecture seule) : l'identifiant et le mot de passe sont des {{NOM}}.
@@ -463,6 +536,7 @@ async function onRequest(req, res) {
         "         et {{basic:USER:PASS}} pour un en-tête Authorization: Basic.",
         "Secrets : GET http://dot-vault:8080/_vault/secrets",
         "Demander un secret : POST http://dot-vault:8080/_vault/request",
+        'Élargir un secret à d\'autres serveurs : POST http://dot-vault:8080/_vault/extend {"secrets": ["NOM"], "hosts": ["…"], "purpose": "…"}',
         'Lire des mails (IMAP, lecture seule) : POST http://dot-vault:8080/_vault/mail',
         '  {"server": "imap.example.com:993", "user": "{{MAIL_USER}}", "password": "{{MAIL_PASSWORD}}", "action": "folders|search|fetch",',
         '   "folder": "INBOX", "query": {"since": "2026-10-23", "from": "…", "subject": "…", "text": "…", "unseen": true}, "limit": 20, "uids": [123]}',
@@ -484,6 +558,11 @@ const server = http.createServer(onRequest);
 server.on("connect", onConnect);
 server.headersTimeout = 0;
 server.requestTimeout = 0; // les réponses en flux (modèles, long polling Telegram) peuvent être longues
-server.listen(PORT, "0.0.0.0", () => log("vault.start", { port: PORT, secrets: Object.keys(vault.secrets), allow: vault.allow }));
+server.listen(PORT, "0.0.0.0", () => {
+  log("vault.start", { port: PORT, secrets: Object.keys(vault.secrets), allow: vault.allow, pending: pending?.id });
+  // Une demande en cours avant le redémarrage : on la reprend (ou on la clôt si elle a expiré).
+  if (pending) (expired() ? finish("expired") : ask(true)).catch(() => {});
+});
+setInterval(() => expired() && finish("expired").catch(() => {}), 60_000).unref();
 
 for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => (log("vault.stop"), process.exit(0)));
