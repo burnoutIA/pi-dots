@@ -10,3 +10,6 @@ roadmap.md
 # Les dots (créés par ./dot create) : leurs fichiers .dot contiennent leurs secrets
 dots/
 *.dot
+
+# Exemples versionnés : leurs fichiers .dot sont vidés de tout secret
+!exemples/**/*.dot

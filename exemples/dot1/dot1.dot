@@ -1,0 +1,40 @@
+---
+name: dot1
+description: Mon assistant personnel. Brief du matin (agenda et mails iCloud), et ce que je lui demande au fil de l'eau.
+onclic: chat      # double-clic sur ce fichier : le dot est lancé, puis chat (la conversation) ou none
+---
+env:
+  DOT_PROVIDER: local
+  DOT_MODEL: swift-1-5-qwen3-8-27b-gguf-iq4-xs
+  DOT_THINKING: medium
+  TELEGRAM_OWNER_ID: ""
+  DOT_RECHECK_MINUTES: "60"
+  TZ: Europe/Paris
+  DOT_MEMORY: 8g
+  DOT_CPUS: "4"
+  DOT_PIDS: "2048"
+  DOT_INTERFACE: rpc
+model:
+  providers:
+    local:
+      baseUrl: http://dot-vault:8080/http/host.docker.internal:4748/v1
+      api: openai-completions
+      apiKey: "{{MODEL_KEY}}"
+      models:
+        - id: swift-1-5-qwen3-8-27b-gguf-iq4-xs
+          name: swift-1-5-qwen3-8-27b-gguf-iq4-xs
+          reasoning: true
+          input:
+            - text
+            - image
+          contextWindow: 131072
+          maxTokens: 32768
+vault:
+  # Exemple : valeurs vidées. Remplis-les, ou laisse le dot les demander (./dot secret).
+  secrets:
+    MODEL_KEY: { value: "MON_MOT_DE_PASSE", hosts: [ host.docker.internal:4748 ] }
+    ICLOUD_USER: { value: "MON_MOT_DE_PASSE", hosts: [ "*.icloud.com", imap.mail.me.com:993 ], readOnly: true }
+    ICLOUD_PASSWORD: { value: "MON_MOT_DE_PASSE", hosts: [ "*.icloud.com", imap.mail.me.com:993 ], readOnly: true }
+    TELEGRAM_TOKEN: { value: "MON_MOT_DE_PASSE", hosts: [ api.telegram.org ] }
+    ICLOUD_MAIL: { value: "MON_MOT_DE_PASSE", hosts: [ imap.mail.me.com:993 ], readOnly: true }
+  allow: []
