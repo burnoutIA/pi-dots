@@ -124,6 +124,19 @@ test("la liste des secrets ne montre jamais les valeurs", async () => {
   assert.doesNotMatch(text, /s3cret-key|mdp|tg-token/);
 });
 
+test("un client qui coupe brutalement un CONNECT ne fait pas tomber le coffre", async () => {
+  const { connect } = await import("node:net");
+  for (const target of ["nexiste-pas.invalid:443", "127.0.0.1:1"]) {
+    const socket = connect(vaultPort, "127.0.0.1");
+    await new Promise((r) => socket.once("connect", r));
+    socket.write(`CONNECT ${target} HTTP/1.1\r\nhost: ${target}\r\n\r\n`);
+    socket.resetAndDestroy(); // RST : côté coffre, ECONNRESET pendant la résolution
+  }
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(vault.exitCode, null);
+  assert.equal((await call("/_vault/secrets")).status, 200);
+});
+
 test("une demande mal formée est refusée", async () => {
   const ask = (body) => call("/_vault/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   assert.equal((await ask({ secrets: [{ name: "minuscule" }], hosts: ["a.example.com"], purpose: "x" })).status, 400);

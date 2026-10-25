@@ -247,16 +247,19 @@ async function resolveAllowed(host, port, explicitlyAllowed = false) {
 function onConnect(req, client, head) {
   const [host, portText] = String(req.url).split(":");
   const port = Number(portText || 443);
+  // Écouté dès le début : le client peut couper pendant la résolution ou après un refus, et une
+  // erreur sans écouteur ferait tomber le coffre, donc tout le réseau du dot.
+  let upstream;
+  client.on("error", () => upstream?.destroy());
   resolveAllowed(host, port)
     .then((address) => {
-      const upstream = net.connect(port, address, () => {
+      upstream = net.connect(port, address, () => {
         client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         if (head?.length) upstream.write(head);
         upstream.pipe(client);
         client.pipe(upstream);
       });
       upstream.on("error", () => client.destroy());
-      client.on("error", () => upstream.destroy());
       log("net.out", { method: "CONNECT", host, port });
     })
     .catch((error) => {
