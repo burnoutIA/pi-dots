@@ -23,6 +23,11 @@
 #   doctor, journal, status [--json], logs
 set -euo pipefail
 
+# Terminal d'un éditeur en snap (VS Code, VSCodium) : il remplace XDG_DATA_HOME par un dossier propre
+# au snap, qui change à chaque mise à jour. On revient au vrai dossier : registre des dots et stockage podman.
+if [ -n "${XDG_DATA_HOME_VSCODE_SNAP_ORIG:-}" ]; then export XDG_DATA_HOME="$XDG_DATA_HOME_VSCODE_SNAP_ORIG"
+elif [[ "${XDG_DATA_HOME:-}" == "$HOME/snap/"* ]]; then unset XDG_DATA_HOME; fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE="${DOT_IMAGE:-dots:latest}"
 DOTS_HOME="${DOTS_HOME:-$ROOT/dots}"                  # où se créent les nouveaux dots
