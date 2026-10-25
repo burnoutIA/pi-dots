@@ -203,7 +203,8 @@ async function valueOf(name) {
 // {{NOM}} et {{basic:USER:PASS}}, écrits tels quels ou encodés dans une adresse (%7B%7B…%7D%7D).
 const PLACEHOLDER = /(?:\{\{|%7B%7B)\s*([A-Za-z0-9_:]+?)\s*(?:\}\}|%7D%7D)/gi;
 
-async function substitute(text, used) {
+// encode : pour un corps de requête, la valeur est échappée selon son format (JSON, formulaire).
+async function substitute(text, used, encode = (v) => v) {
   const found = [...text.matchAll(PLACEHOLDER)];
   if (!found.length) return text;
   const values = [];
@@ -211,14 +212,36 @@ async function substitute(text, used) {
     const parts = match[1].split(":");
     if (parts[0].toLowerCase() === "basic" && parts.length === 3) {
       used.add(parts[1]).add(parts[2]);
-      values.push(Buffer.from(`${await valueOf(parts[1])}:${await valueOf(parts[2])}`).toString("base64"));
+      values.push(encode(Buffer.from(`${await valueOf(parts[1])}:${await valueOf(parts[2])}`).toString("base64")));
     } else {
       used.add(parts[0]);
-      values.push(await valueOf(parts[0]));
+      values.push(encode(await valueOf(parts[0])));
     }
   }
   let i = 0;
   return text.replace(PLACEHOLDER, () => values[i++]);
+}
+
+// Corps texte où les marqueurs sont remplacés (un login en JSON, un formulaire). Les autres
+// (fichiers, binaire) passent tels quels, sans être lus en mémoire.
+const BODY_MAX = 1024 * 1024;
+function bodyEncoder(contentType = "") {
+  const type = contentType.split(";")[0].trim().toLowerCase();
+  if (type === "application/json" || type.endsWith("+json")) return (v) => JSON.stringify(v).slice(1, -1);
+  if (type === "application/x-www-form-urlencoded") return encodeURIComponent;
+  if (type.startsWith("text/")) return (v) => v;
+  return null;
+}
+
+async function readText(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > BODY_MAX) throw Object.assign(new Error(`corps trop gros pour y remplacer des secrets (plus de ${BODY_MAX} octets)`), { status: 413 });
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 // --- Adresses privées -------------------------------------------------------------------------------
@@ -272,7 +295,7 @@ function onConnect(req, client, head) {
 
 const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host"]);
 
-function forward(req, res, target, headers, address, { onStatus } = {}) {
+function forward(req, res, target, headers, address, { onStatus, body } = {}) {
   const out = { ...headers, host: target.host };
   const lib = target.protocol === "https:" ? https : http;
   const upstream = lib.request(
@@ -297,7 +320,8 @@ function forward(req, res, target, headers, address, { onStatus } = {}) {
     res.end(`${error.message}\n`);
   });
   req.on("aborted", () => upstream.destroy());
-  req.pipe(upstream);
+  if (body) upstream.end(body);
+  else req.pipe(upstream);
 }
 
 function reply(res, status, body) {
@@ -320,6 +344,12 @@ async function relay(req, res, scheme, rest, search) {
     if (HOP.has(name)) continue;
     headers[name] = Array.isArray(value) ? value : await substitute(String(value), used);
   }
+  let body;
+  const encode = bodyEncoder(req.headers["content-type"]);
+  if (encode && !READ_METHODS.has(String(req.method).toUpperCase())) {
+    body = Buffer.from(await substitute(await readText(req), used, encode), "utf8");
+    headers["content-length"] = String(body.length);
+  }
 
   for (const name of used) {
     const secret = vault.secrets[name];
@@ -336,6 +366,7 @@ async function relay(req, res, scheme, rest, search) {
   if (!used.size) log("net.out", { method: req.method, host, port, relay: true });
 
   forward(req, res, target, headers, address, {
+    body,
     onStatus: (status) => {
       if (status === 401) for (const name of used) accessTokens.delete(name);
       if (status >= 500) log("net.error", { host, status, secrets: [...used] });
@@ -625,8 +656,9 @@ async function onRequest(req, res) {
       [
         "dot-vault — tes secrets, sans leurs valeurs.",
         "",
-        "Relais : http://dot-vault:8080/https/<serveur>/<chemin> (ou /http/…), avec {{NOM}} dans l'adresse ou les en-têtes,",
-        "         et {{basic:USER:PASS}} pour un en-tête Authorization: Basic.",
+        "Relais : http://dot-vault:8080/https/<serveur>/<chemin> (ou /http/…), avec {{NOM}} dans l'adresse, les en-têtes",
+        "         ou un corps JSON / formulaire / texte (POST, PUT…), et {{basic:USER:PASS}} pour un en-tête Authorization: Basic.",
+        "         Un secret en lecture seule n'accepte que GET/HEAD : pour un login en POST, demande-le avec \"readOnly\": false.",
         "Secrets : GET http://dot-vault:8080/_vault/secrets",
         "Demander un secret : POST http://dot-vault:8080/_vault/request",
         'Élargir un secret à d\'autres serveurs : POST http://dot-vault:8080/_vault/extend {"secrets": ["NOM"], "hosts": ["…"], "purpose": "…"}',

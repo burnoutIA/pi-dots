@@ -17,7 +17,11 @@ const OWNER = 42;
 
 // --- Faux service : renvoie ce qu'il reçoit ---
 let servicePort;
-const service = http.createServer((req, res) => res.end(JSON.stringify({ method: req.method, url: req.url, auth: req.headers.authorization ?? null })));
+const service = http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (c) => (body += c));
+  req.on("end", () => res.end(JSON.stringify({ method: req.method, url: req.url, auth: req.headers.authorization ?? null, body })));
+});
 
 // --- Faux Telegram : garde les messages envoyés, renvoie les mises à jour qu'on lui donne ---
 let telegramPort;
@@ -75,6 +79,7 @@ before(async () => {
         USER: { value: "moi", hosts: [`127.0.0.1:${servicePort}`], readOnly: true },
         PASS: { value: "mdp", hosts: [`127.0.0.1:${servicePort}`], readOnly: true },
         ELSEWHERE: { value: "x", hosts: ["*.example.com"] },
+        LOGIN_PASS: { value: 'a"b\\c&d=e', hosts: [`127.0.0.1:${servicePort}`] },
         TELEGRAM_TOKEN: { value: "tg-token", hosts: [`127.0.0.1:${telegramPort}`] },
       },
       allow: [],
@@ -100,6 +105,21 @@ test("les marqueurs sont remplacés dans les en-têtes et l'adresse", async () =
   assert.equal(b.url, "/bots3cret-key/x");
   const c = await (await call(svc("/"), { method: "PROPFIND", headers: { authorization: "Basic {{basic:USER:PASS}}" } })).json();
   assert.equal(c.auth, `Basic ${Buffer.from("moi:mdp").toString("base64")}`);
+});
+
+test("les marqueurs sont remplacés dans un corps JSON ou formulaire, échappés selon le format", async () => {
+  const json = await (await call(svc("/login"), { method: "POST", headers: { "content-type": "application/json" }, body: '{"username":"{{KEY}}","password":"{{LOGIN_PASS}}"}' })).json();
+  assert.deepEqual(JSON.parse(json.body), { username: "s3cret-key", password: 'a"b\\c&d=e' });
+  const form = await (await call(svc("/login"), { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "u={{KEY}}&p={{LOGIN_PASS}}" })).json();
+  assert.equal(new URLSearchParams(form.body).get("p"), 'a"b\\c&d=e');
+  const raw = await (await call(svc("/up"), { method: "POST", headers: { "content-type": "application/octet-stream", authorization: "Bearer {{KEY}}" }, body: "{{KEY}}" })).json();
+  assert.equal(raw.body, "{{KEY}}"); // binaire : jamais touché
+});
+
+test("un secret dans le corps obéit aux mêmes règles : serveurs et lecture seule", async () => {
+  const post = (body) => call(svc("/login"), { method: "POST", headers: { "content-type": "application/json" }, body });
+  assert.equal((await post('{"p":"{{USER}}"}')).status, 403);
+  assert.equal((await post('{"p":"{{ELSEWHERE}}"}')).status, 403);
 });
 
 test("un secret ne part que vers ses serveurs", async () => {
