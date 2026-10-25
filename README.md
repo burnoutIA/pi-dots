@@ -72,7 +72,7 @@ vault:
 
 - **Deux conteneurs par dot**, tirés de la même image : le **dot** (pi, ses extensions, ses outils) et son **coffre**. Ils sont nommés d'après le dot et son dossier (`dot-<nom>-<empreinte>`), si bien que deux copies d'un même dot ne se gênent pas.
 - **Un réseau interne par dot**, sans sortie : le dot n'y voit que son coffre, joignable sous le nom `dot-vault`. Le coffre est aussi sur le réseau externe, commun à tous les coffres : c'est la seule porte vers le dehors.
-- **Au démarrage**, l'application lit le fichier `.dot`, en extrait `env` et `model` (dans `state/.run/`, refusés s'ils contiennent un secret), lance le coffre avec le fichier `.dot` (pour son nœud `vault`), puis le dot avec son dossier. Les conteneurs sont recréés à chaque démarrage : seul le dossier compte.
+- **Au démarrage**, l'application lit le fichier `.dot`, en extrait `env` et `model` (dans `state/.run/`, refusés s'ils contiennent un secret), lance le coffre avec le dossier du dot (pour le nœud `vault` de son fichier, qu'il relit quand tu le modifies), puis le dot avec son dossier. Les conteneurs sont recréés à chaque démarrage : seul le dossier compte.
 - **Dans le dot**, pi tourne en continu pour la conversation (dans un terminal ou derrière le relais RPC). L'extension `dot` y ajoute un battement qui lance, au besoin, des runs de travail : d'autres pi, lancés à part, un par objectif (voir « Comment le dot travaille »).
 - **Hors des dots**, sur ta machine : le script `dot` (toutes les commandes, la liste des dots connus dans `~/.local/share/dots/`) et le **veilleur**, un seul pour tous les dots, qui permet de les allumer depuis Telegram quand ils sont éteints.
 - **Entre la machine et le dot**, tout passe par le dossier : `state/channel/` pour le chat local et le socket RPC, `state/inbox/` pour les fichiers déposés, `state/livrables/` pour ce qu'il produit.
@@ -235,16 +235,18 @@ Les mails (IMAP) ne sont pas du web : le coffre les lit lui-même, en lecture se
 
 Tu n'as pas à éditer le nœud `vault` toi-même. Quand il manque un secret au dot pour faire ce que tu lui demandes, il le demande au coffre (outil `secret`) :
 
-1. Le coffre, et non l'IA, te pose la question, **sur Telegram et sur ta machine** : à quoi servira le secret, vers quels serveurs il pourra partir, en lecture seule ou non.
-2. Tu réponds :
-   - sur Telegram, le coffre intercepte ta réponse avant qu'elle n'atteigne le dot, et **efface ton message du fil** ;
-   - sur ta machine, avec `./dot secret` (ou `/secret` dans le chat), ta saisie ne s'affiche pas et va **directement au coffre**, par une porte qui n'écoute qu'à l'intérieur de son conteneur. Le dot ne peut pas la joindre, et la valeur ne passe jamais par `state/`.
-   La première réponse l'emporte ; `/annuler` refuse.
-3. Le coffre enregistre, te le confirme et prévient le dot. Il n'y a rien à redémarrer.
+1. Le coffre, et non l'IA, te prévient : sur Telegram s'il est configuré, et dans `./dot chat`. Il te dit à quoi servira le secret, vers quels serveurs il pourra partir, en lecture seule ou non.
+2. Tu réponds **toujours depuis ta machine**, au choix :
+   - avec `./dot secret` (ou `/secret` dans le chat) : ta saisie ne s'affiche pas et va **directement au coffre**, par une porte qui n'écoute qu'à l'intérieur de son conteneur. Le dot ne peut pas la joindre, et la valeur ne passe jamais par `state/`. `/annuler` refuse ;
+   - ou en écrivant dans le fichier `.dot` : le message du coffre donne son emplacement et la ligne à coller sous `vault` → `secrets`, prête à remplir (`ICLOUD_MAIL: { value: "", hosts: [ imap.mail.me.com:993 ], readOnly: true }`). Le coffre relit le fichier dès qu'il change, et la demande se termine quand la valeur est remplie.
+   Jamais par Telegram : cette conversation est celle du dot, il la lit. Elle reste donc libre pendant une demande.
+3. Le coffre enregistre, te le confirme (aussi sur Telegram) et prévient le dot. Il n'y a rien à redémarrer.
 
 Pour qu'un secret existant serve aussi vers un autre serveur, le dot demande un **élargissement** : tu réponds oui ou non.
 
-Une demande à la fois ; elle survit à un redémarrage du coffre et expire au bout de 30 minutes. Pendant une demande, les commandes du bot passent normalement au dot.
+Une demande à la fois ; elle survit à un redémarrage du coffre et expire au bout de 30 minutes.
+
+**Modifier le nœud `vault` à la main** marche à tout moment, coffre allumé : il relit le fichier dès qu'il change, sans redémarrage. Il n'écrit lui-même que ce qu'il change, et ne retire jamais un secret que tu as ajouté. Si le fichier est mal formé, il garde la version précédente et te prévient. Une ligne dont `value` est vide n'est pas encore un secret.
 
 **Limites** :
 - un service qui exige une autorisation dans un navigateur (OAuth) ne se configure pas ainsi : son secret s'ajoute à la main dans le nœud `vault` du fichier `.dot` ;
@@ -325,7 +327,7 @@ Le dot a le même diagnostic (outil `doctor`, sur une période réglable) pour s
 
 `./dot test` lance les tests automatiques dans l'image, sur le code du dépôt (sans reconstruire) :
 - **le cœur** : plan, échéances, détection de panne du modèle, mémoire, skills mal formés, comptage d'usage et choix des outils déclarés ;
-- **le coffre de bout en bout**, avec un faux service et un faux Telegram : marqueurs, serveurs autorisés, lecture seule, adresses privées, demande de secret (interception, enregistrement, effacement, annulation, élargissement, redémarrage), et réponse depuis la machine ;
+- **le coffre de bout en bout**, avec un faux service et un faux Telegram : marqueurs, serveurs autorisés, lecture seule, adresses privées, demande de secret (notification Telegram sans aucune valeur, avec le fichier et la ligne à coller, conversation laissée au dot, réponse depuis la machine ou dans le fichier, annulation, élargissement, redémarrage), relecture du fichier modifié à la main ;
 - **le fichier `.dot`** : lecture, extraction de `env` et `model`, refus des secrets hors du vault, mise à jour du vault en gardant les commentaires, création et copie vierge ;
 - **le relais RPC** : plusieurs clients, réponses rendues au bon client, demandes à l'interface.
 

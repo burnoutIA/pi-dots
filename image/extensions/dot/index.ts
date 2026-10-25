@@ -840,7 +840,7 @@ function channelCommands(pi: ExtensionAPI): ChannelCommand[] {
     { name: "resume", description: "Reprendre son autonomie", run: () => (shared.setPaused(false), text("Autonomie reprise.")) },
   ];
   // Les commandes de pi du moment : celles des extensions et des skills que le dot s'est écrits.
-  const taken = new Set(builtins.map((c) => c.name).concat(["new", "allumer", "eteindre", "start", "annuler"]));
+  const taken = new Set(builtins.map((c) => c.name).concat(["new", "allumer", "eteindre", "start", "secret"]));
   const dynamic: ChannelCommand[] = [];
   for (const c of pi.getCommands()) {
     if (INTERNAL_COMMANDS.has(c.name)) continue;
@@ -1085,8 +1085,8 @@ function registerTools(pi: ExtensionAPI) {
       "To call a service through the vault: http://dot-vault:8080/https/<host>/<path> (or /http/…), writing {{NAME}} where a secret goes (URL or header), " +
       "e.g. `Authorization: Bearer {{API_TOKEN}}` or `Authorization: Basic {{basic:SERVICE_USER:SERVICE_PASSWORD}}`; for mail (IMAP, read-only): POST http://dot-vault:8080/_vault/mail (see `curl http://dot-vault:8080/`). A secret only goes to its allowed hosts. " +
       "action `list`: the secrets that exist (names, allowed hosts, read-only), never their values. " +
-      "action `request`: ask the person for missing secrets; the vault asks them on Telegram, catches their answers before they reach you, stores them, " +
-      "and drops a note in your inbox when done. Give `secrets` (names in CAPITALS with a human label), `hosts` (where they may be sent), `read_only`, and `purpose`. " +
+      "action `request`: ask the person for missing secrets; the vault notifies them on Telegram and they answer from their machine, so you never see the values; " +
+      "the vault stores them and drops a note in your inbox when done. Never ask them to send a secret in the conversation. Give `secrets` (names in CAPITALS with a human label), `hosts` (where they may be sent), `read_only`, and `purpose`. " +
       "action `extend`: an existing secret must also go to other servers (e.g. the same account on another server of the service): give `secrets` (existing names), the extra `hosts` and `purpose`; the person answers yes or no.",
     promptSnippet: "secret: list the vault's secrets, or ask the person for a missing one (you never see values)",
     promptGuidelines: [

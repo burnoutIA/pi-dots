@@ -11,25 +11,27 @@
 // Le remplacement se fait dans l'adresse et les en-têtes, et seulement si le serveur visé est dans
 // les `hosts` du secret ; un secret `readOnly` n'accompagne que des lectures.
 //
-// Quand il manque un secret, le dot le demande (POST /_vault/request). Le coffre écrit alors à la
-// personne sur Telegram, intercepte sa réponse avant qu'elle n'atteigne le dot (il est sur le
-// chemin de la lecture des messages), l'enregistre, efface le message du fil, et prévient le dot
-// par sa boîte de dépôt.
+// Quand il manque un secret, le dot le demande (POST /_vault/request). Le coffre prévient la
+// personne sur Telegram, mais elle répond toujours depuis sa machine (./dot secret), par une porte
+// que le dot ne peut pas joindre : la conversation Telegram reste au dot, et une valeur ne passe
+// jamais par elle. Le coffre enregistre, puis prévient le dot par sa boîte de dépôt.
 //
 // Le reste du trafic (HTTPS_PROXY) passe par le proxy sortant : internet ouvert, adresses privées
 // refusées sauf celles de `allow`.
 
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import { randomBytes } from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import { join } from "node:path";
-import { readVault, writeVault } from "../dotfile.mjs";
+import { patchVault, readVault } from "../dotfile.mjs";
 import { readMail } from "./imap.mjs";
 
 const CONFIG_FILE = process.env.VAULT_CONFIG ?? "/vault/dot.dot";
+// Le même fichier, vu de la machine : pour dire à la personne où il est.
+const DOT_FILE = process.env.DOT_FILE ?? "";
 const LOGS = process.env.VAULT_LOGS ?? "/logs";
 const INBOX = process.env.VAULT_INBOX ?? "/inbox";
 const PORT = Number(process.env.VAULT_PORT ?? 8080);
@@ -37,9 +39,11 @@ const OWNER = Number(process.env.TELEGRAM_OWNER_ID);
 const TELEGRAM_SECRET = "TELEGRAM_TOKEN";
 // Adresse de l'API Telegram (réglable pour les tests, qui utilisent un faux Telegram).
 const TELEGRAM_API = (process.env.VAULT_TELEGRAM_API ?? "https://api.telegram.org").replace(/\/$/, "");
-const TELEGRAM_HOST = new URL(TELEGRAM_API).hostname;
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PROPFIND", "REPORT"]);
 const NAME = /^[A-Z][A-Z0-9_]*$/;
+// Pour dire à la personne quelle commande lancer (./dot @nom secret).
+const DOT_NAME = process.env.DOT_NAME ?? "";
+const SECRET_COMMAND = `./dot ${DOT_NAME ? `@${DOT_NAME} ` : ""}secret`;
 
 // --- Journal ----------------------------------------------------------------------------------
 
@@ -61,19 +65,97 @@ function log(type, data = {}) {
 let vault = { secrets: {}, allow: [] };
 
 // Les secrets vivent dans le nœud `vault` du fichier du dot (<nom>.dot) ; le coffre est le seul à le lire.
-function load() {
+// Lit et vérifie ce nœud ; une erreur dit ce qui ne va pas.
+function parseVault() {
   const raw = readVault(CONFIG_FILE);
-  vault = { secrets: raw.secrets ?? {}, allow: raw.allow ?? [] };
-  pending = raw._pending ?? null;
-  for (const [name, secret] of Object.entries(vault.secrets)) {
+  const next = { secrets: raw.secrets ?? {}, allow: raw.allow ?? [] };
+  for (const [name, secret] of Object.entries(next.secrets)) {
     if (!NAME.test(name)) throw new Error(`nom de secret invalide : ${name} (MAJUSCULES_ET_CHIFFRES)`);
+    if (!secret || typeof secret !== "object") throw new Error(`secret ${name} : { value: "…", hosts: [ … ] } attendu`);
     if (!Array.isArray(secret.hosts) || !secret.hosts.length) throw new Error(`secret ${name} : « hosts » manquant (où il a le droit d'aller)`);
     if (secret.oauth && !secret.oauth.tokenUrl) throw new Error(`secret ${name} : oauth.tokenUrl manquant (adresse de renouvellement du jeton)`);
   }
+  return { next, pending: raw._pending ?? null };
 }
-function save() {
-  // Secret par secret : le reste du fichier (en-tête, env, model, commentaires) ne bouge pas.
-  writeVault(CONFIG_FILE, { ...vault, _pending: pending ?? undefined });
+function load() {
+  const read = parseVault();
+  vault = read.next;
+  pending = read.pending;
+  seenStamp = fileStamp();
+}
+
+// Le coffre n'écrit que ce qu'il change (les secrets nommés, sa demande en cours) : ce que la
+// personne a écrit à la main est gardé.
+function save(names = []) {
+  const before = fileStamp();
+  patchVault(CONFIG_FILE, { secrets: Object.fromEntries(names.map((n) => [n, vault.secrets[n]])), pending: pending ?? null });
+  // Notre propre écriture n'est pas un changement à relire, sauf si la personne a écrit juste avant.
+  if (before === seenStamp) seenStamp = fileStamp();
+}
+
+// Une ligne pas encore remplie (value: "") n'est pas un secret utilisable.
+const filled = (secret) => !!secret && (!!secret.oauth || String(secret.value ?? "") !== "");
+const valueKey = (secret) => JSON.stringify(secret?.oauth ?? secret?.value ?? null);
+
+// --- Le fichier, relu quand la personne le modifie ------------------------------------------------
+
+let seenStamp = "";
+let lastReadError = "";
+function fileStamp() {
+  try {
+    const s = statSync(CONFIG_FILE);
+    return `${s.mtimeMs}:${s.size}`;
+  } catch {
+    return "";
+  }
+}
+
+async function reload() {
+  const stamp = fileStamp();
+  if (!stamp || stamp === seenStamp) return;
+  seenStamp = stamp;
+  let next;
+  try {
+    next = parseVault().next;
+  } catch (error) {
+    // Peut-être en cours d'écriture : on garde la version précédente, et on le dit une fois.
+    if (error.message !== lastReadError) {
+      lastReadError = error.message;
+      log("vault.config.error", { error: error.message });
+      await notify(`⚠️ Le coffre ne peut pas relire ${fileLabel()} : ${error.message}\nIl garde la version précédente jusqu'à ce que le fichier soit corrigé.`);
+    }
+    return;
+  }
+  lastReadError = "";
+  const before = vault.secrets;
+  vault = next;
+  // Les secrets remplis ou changés à la main (les noms seulement, jamais les valeurs).
+  const changed = Object.keys(next.secrets).filter((n) => filled(next.secrets[n]) && valueKey(before[n]) !== valueKey(next.secrets[n]));
+  for (const name of changed) accessTokens.delete(name);
+  log("vault.reload", { secrets: Object.keys(next.secrets), changed });
+  await byHand(changed);
+}
+
+// La demande en cours a peut-être été faite à la main, dans le fichier.
+async function byHand(changed) {
+  if (!pending) return;
+  if (pending.type === "extend") {
+    const done = pending.names.every((n) => pending.hosts.every((h) => vault.secrets[n]?.hosts?.map(String).map((x) => x.toLowerCase()).includes(h)));
+    if (done) await finish("saved", { byHand: true });
+    return;
+  }
+  const wanted = pending.fields.map((f) => f.name);
+  const hand = changed.filter((n) => wanted.includes(n));
+  if (!hand.length) return;
+  pending.byHand = [...new Set([...(pending.byHand ?? []), ...hand])];
+  advance();
+  if (pending.index >= pending.fields.length) return finish("saved", { byHand: true });
+  save();
+}
+
+// Passe les secrets déjà remplis à la main : la machine ne les redemande pas.
+function advance() {
+  while (pending.index < pending.fields.length && pending.byHand?.includes(pending.fields[pending.index].name)) pending.index += 1;
 }
 
 // Motifs de serveur : « api.example.com », « host:8080 », « *.example.com ».
@@ -114,6 +196,7 @@ async function oauthToken(name, secret) {
 async function valueOf(name) {
   const secret = vault.secrets[name];
   if (!secret) throw Object.assign(new Error(`secret inconnu : ${name}. Demande-le avec POST /_vault/request.`), { status: 400 });
+  if (!filled(secret)) throw Object.assign(new Error(`secret ${name} pas encore rempli par la personne`), { status: 400 });
   return secret.oauth ? oauthToken(name, secret) : String(secret.value ?? "");
 }
 
@@ -186,7 +269,7 @@ function onConnect(req, client, head) {
 
 const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host"]);
 
-function forward(req, res, target, headers, address, { transform, onStatus } = {}) {
+function forward(req, res, target, headers, address, { onStatus } = {}) {
   const out = { ...headers, host: target.host };
   const lib = target.protocol === "https:" ? https : http;
   const upstream = lib.request(
@@ -201,24 +284,8 @@ function forward(req, res, target, headers, address, { transform, onStatus } = {
     },
     (answer) => {
       onStatus?.(answer.statusCode ?? 502);
-      if (!transform) {
-        res.writeHead(answer.statusCode ?? 502, answer.headers);
-        return answer.pipe(res);
-      }
-      // Réponse à modifier (lecture des messages Telegram) : lue en entier, puis réécrite.
-      const chunks = [];
-      answer.on("data", (c) => chunks.push(c));
-      answer.on("end", async () => {
-        let body = Buffer.concat(chunks);
-        try {
-          body = Buffer.from(await transform(body.toString("utf8")));
-        } catch {}
-        const h = { ...answer.headers, "content-length": String(body.length) };
-        delete h["content-encoding"];
-        delete h["transfer-encoding"];
-        res.writeHead(answer.statusCode ?? 502, h);
-        res.end(body);
-      });
+      res.writeHead(answer.statusCode ?? 502, answer.headers);
+      answer.pipe(res);
     },
   );
   upstream.on("error", (error) => {
@@ -265,10 +332,7 @@ async function relay(req, res, scheme, rest, search) {
   const address = await resolveAllowed(host, port, named);
   if (!used.size) log("net.out", { method: req.method, host, port, relay: true });
 
-  const isUpdates = host === TELEGRAM_HOST && target.pathname.endsWith("/getUpdates");
   forward(req, res, target, headers, address, {
-    // Toujours relue : la réponse de la personne peut arriver pendant une attente déjà commencée.
-    transform: isUpdates ? intercept : undefined,
     onStatus: (status) => {
       if (status === 401) for (const name of used) accessTokens.delete(name);
       if (status >= 500) log("net.error", { host, status, secrets: [...used] });
@@ -276,16 +340,14 @@ async function relay(req, res, scheme, rest, search) {
   });
 }
 
-// --- Demandes de secrets, par Telegram ----------------------------------------------------------
+// --- Demandes de secrets ------------------------------------------------------------------------
 
-// La demande en cours (une à la fois). Elle est gardée dans vault.json : un redémarrage du coffre
-// ne la perd pas. Deux sortes :
+// La demande en cours (une à la fois). Elle est gardée dans le fichier du dot : un redémarrage du
+// coffre ne la perd pas. Deux sortes :
 //   - values : la personne envoie une valeur par secret ;
 //   - extend : la personne répond oui ou non pour élargir les serveurs d'un secret existant.
 let pending = null; // { id, type, fields, index, values, hosts, readOnly, purpose, names, created }
 const PENDING_MINUTES = Number(process.env.VAULT_PENDING_MINUTES ?? 30);
-// Commandes du bot qui ne sont jamais prises pour une réponse : elles vont au dot.
-const BOT_COMMAND = /^\/(status|new|pause|resume|start|eteindre|allumer)\b/i;
 
 async function telegram(method, params) {
   const token = vault.secrets[TELEGRAM_SECRET]?.value;
@@ -301,38 +363,54 @@ async function telegram(method, params) {
   return json.result;
 }
 
-function ask(resumed = false) {
-  // Sans Telegram, la personne répond depuis sa machine (./dot chat), qui interroge le coffre.
-  if (!vault.secrets[TELEGRAM_SECRET] || !Number.isInteger(OWNER)) return Promise.resolve();
-  const intro = resumed ? ["(Le coffre a redémarré : je reprends la demande en cours.)"] : [];
-  if (pending.type === "extend") {
-    const text = [
-      ...intro,
-      "🔐 Le dot demande d'élargir un accès. Ta réponse est lue par le coffre, pas par le dot.",
-      `Secrets : ${pending.names.join(", ")}`,
-      `Aujourd'hui autorisés vers : ${[...new Set(pending.names.flatMap((n) => vault.secrets[n]?.hosts ?? []))].join(", ")}`,
-      `Demandé en plus : ${pending.hosts.join(", ")}`,
-      `Pour : ${pending.purpose}`,
-      "",
-      "Réponds oui ou non.",
-    ].join("\n");
-    return telegram("sendMessage", { chat_id: OWNER, text });
+const telegramReady = () => !!vault.secrets[TELEGRAM_SECRET] && Number.isInteger(OWNER);
+const notify = (text) => (telegramReady() ? telegram("sendMessage", { chat_id: OWNER, text }).catch(() => {}) : Promise.resolve());
+const fileLabel = () => (DOT_FILE ? DOT_FILE : "le fichier .dot du dot");
+const html = (text) => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// Les lignes à coller dans le fichier, prêtes à remplir.
+const yamlHost = (h) => (/^[a-z0-9.-]+(:\d+)?$/.test(h) ? h : `"${h}"`);
+const yamlHosts = (hosts) => `[ ${hosts.map(yamlHost).join(", ")} ]`;
+function yamlLines(request) {
+  if (request.type === "extend") {
+    return request.names.map((n) => `    ${n}: { …, hosts: ${yamlHosts([...new Set([...(vault.secrets[n]?.hosts ?? []), ...request.hosts])])} }`);
   }
-  const field = pending.fields[pending.index];
-  const head =
-    pending.index === 0 || resumed
-      ? [
-          ...intro,
-          "🔐 Le dot demande un accès. Tes réponses sont lues par le coffre, pas par le dot, puis effacées de ce fil.",
-          `Pour : ${pending.purpose}`,
-          `Envoyé uniquement à : ${pending.hosts.join(", ")}`,
-          pending.readOnly ? "Lecture seule : oui" : "Lecture seule : non (lecture et écriture)",
-          "",
-        ]
-      : [];
-  const replace = vault.secrets[field.name] ? " — remplace la valeur déjà enregistrée" : "";
-  const text = [...head, `${pending.index + 1}/${pending.fields.length} · ${field.label} (${field.name})${replace}`, "Envoie la valeur, ou /annuler."].join("\n");
-  return telegram("sendMessage", { chat_id: OWNER, text });
+  const width = Math.max(...request.fields.map((f) => f.name.length));
+  return request.fields.map((f) => `    ${`${f.name}:`.padEnd(width + 1)} { value: "", hosts: ${yamlHosts(request.hosts)}${request.readOnly ? ", readOnly: true" : ""} }  # ${f.label}`);
+}
+
+// Prévient la personne sur Telegram (s'il est configuré). Ce n'est qu'une notification : elle
+// répond depuis sa machine, avec ./dot secret ou en écrivant dans le fichier du dot.
+function ask(resumed = false) {
+  if (!telegramReady()) return Promise.resolve();
+  const intro = resumed ? ["<i>(Le coffre a redémarré : la demande est toujours en cours.)</i>"] : [];
+  const extend = pending.type === "extend";
+  const lines = extend
+    ? [
+        "🔐 <b>Le dot demande d'élargir un accès.</b>",
+        `Pour : ${html(pending.purpose)}`,
+        `Secrets : ${html(pending.names.join(", "))}`,
+        `Aujourd'hui autorisés vers : ${html([...new Set(pending.names.flatMap((n) => vault.secrets[n]?.hosts ?? []))].join(", "))}`,
+        `Demandé en plus : ${html(pending.hosts.join(", "))}`,
+      ]
+    : [
+        "🔐 <b>Le dot demande un accès.</b>",
+        `Pour : ${html(pending.purpose)}`,
+        `Secrets : ${html(pending.fields.map((f) => `${f.label} (${f.name})${vault.secrets[f.name] ? ", remplace la valeur enregistrée" : ""}`).join(" ; "))}`,
+        `Envoyés uniquement à : ${html(pending.hosts.join(", "))}`,
+        pending.readOnly ? "Lecture seule : oui" : "Lecture seule : non (lecture et écriture)",
+      ];
+  const how = [
+    "",
+    "<b>N'envoie aucune valeur ici</b> : cette conversation est lue par le dot. Pour répondre, au choix :",
+    `1. sur ta machine : <code>${html(SECRET_COMMAND)}</code>${extend ? " (oui ou non)" : ""}`,
+    extend
+      ? `2. ou dans <code>${html(fileLabel())}</code>, sous <code>vault</code> → <code>secrets</code>, mets ces serveurs dans <code>hosts</code> :`
+      : `2. ou dans <code>${html(fileLabel())}</code>, sous <code>vault</code> → <code>secrets</code>, colle ${pending.fields.length > 1 ? "ces lignes" : "cette ligne"} et remplis <code>value</code> :`,
+    `<pre>${html(yamlLines(pending).join("\n"))}</pre>`,
+    "Le coffre voit la modification tout seul, sans redémarrage.",
+  ];
+  return telegram("sendMessage", { chat_id: OWNER, text: [...intro, ...lines, ...how].join("\n"), parse_mode: "HTML" });
 }
 
 function tellDot(id, text) {
@@ -342,11 +420,12 @@ function tellDot(id, text) {
   } catch {}
 }
 
-// outcome : saved | cancelled | expired
-async function finish(outcome) {
+// outcome : saved | cancelled | expired. byHand : la personne l'a fait elle-même dans le fichier.
+async function finish(outcome, { byHand = false } = {}) {
   const request = pending;
   pending = null;
   const names = request.type === "extend" ? request.names : request.fields.map((f) => f.name);
+  const how = byHand ? " (dans le fichier)" : "";
   if (outcome !== "saved") {
     save();
     const why = outcome === "expired" ? `sans réponse depuis ${PENDING_MINUTES} min` : "refusée par la personne";
@@ -360,27 +439,29 @@ async function finish(outcome) {
       const secret = vault.secrets[name];
       if (secret) secret.hosts = [...new Set([...secret.hosts, ...request.hosts])];
     }
-    save();
-    log("secret.extended", { request: request.id, names, hosts: request.hosts });
+    save(byHand ? [] : names);
+    log("secret.extended", { request: request.id, names, hosts: request.hosts, byHand: byHand || undefined });
     tellDot(request.id, `La personne a accepté : ${names.join(", ")} peuvent maintenant aussi aller vers ${request.hosts.join(", ")}.`);
-    await telegram("sendMessage", { chat_id: OWNER, text: `✅ Accès élargi : ${names.join(", ")} → ${request.hosts.join(", ")}.` }).catch(() => {});
+    await telegram("sendMessage", { chat_id: OWNER, text: `✅ Accès élargi${how} : ${names.join(", ")} → ${request.hosts.join(", ")}.` }).catch(() => {});
     return;
   }
-  for (const field of request.fields) {
-    vault.secrets[field.name] = { value: request.values[field.name], hosts: request.hosts, ...(request.readOnly ? { readOnly: true } : {}) };
+  // Les valeurs données par la machine ; celles écrites à la main sont déjà dans le fichier.
+  const given = request.fields.filter((f) => f.name in request.values).map((f) => f.name);
+  for (const name of given) {
+    vault.secrets[name] = { value: request.values[name], hosts: request.hosts, ...(request.readOnly ? { readOnly: true } : {}) };
   }
-  save();
-  log("secret.saved", { request: request.id, names, hosts: request.hosts, readOnly: request.readOnly });
+  save(given);
+  log("secret.saved", { request: request.id, names, hosts: request.hosts, readOnly: request.readOnly, byHand: request.byHand });
   tellDot(
     request.id,
     `Les secrets ${names.join(", ")} sont disponibles dans le coffre (pour ${request.hosts.join(", ")}${request.readOnly ? ", lecture seule" : ""}). Demande d'origine : ${request.purpose}. Utilise-les avec {{NOM}} dans tes requêtes par le coffre.`,
   );
-  await telegram("sendMessage", { chat_id: OWNER, text: `✅ Enregistré dans le coffre : ${names.join(", ")}. Tes messages ont été effacés de ce fil.` }).catch(() => {});
+  await telegram("sendMessage", { chat_id: OWNER, text: `✅ Enregistré dans le coffre${how} : ${names.join(", ")}.` }).catch(() => {});
 }
 
 const expired = () => pending && Date.now() - new Date(pending.created).getTime() > PENDING_MINUTES * 60_000;
 
-// Une réponse de la personne à la demande en cours, d'où qu'elle vienne (Telegram ou la machine).
+// Une réponse de la personne à la demande en cours (depuis sa machine, par la porte d'administration).
 // Renvoie ce qu'il faut lui dire ensuite.
 async function answer(text) {
   if (!pending) return "Aucune demande en cours.";
@@ -401,35 +482,14 @@ async function answer(text) {
   }
   pending.values[pending.fields[pending.index].name] = text;
   pending.index += 1;
+  advance();
   if (pending.index < pending.fields.length) {
     save();
-    await ask().catch(() => {});
     return "Valeur reçue.";
   }
   const names = pending.fields.map((f) => f.name);
   await finish("saved");
   return `Enregistré dans le coffre : ${names.join(", ")}.`;
-}
-
-// La lecture des messages par le dot passe ici : les réponses de la personne à la demande en cours
-// sont retirées (le dot ne reçoit que le numéro du message), enregistrées, puis effacées du fil.
-async function intercept(body) {
-  const json = JSON.parse(body);
-  if (!json.ok || !Array.isArray(json.result)) return body;
-  if (expired()) await finish("expired");
-  for (const update of json.result) {
-    const msg = update.message;
-    if (!pending || !msg || msg.chat?.type !== "private" || msg.from?.id !== OWNER || typeof msg.text !== "string") continue;
-    const text = msg.text.trim();
-    if (BOT_COMMAND.test(text)) continue;
-    delete update.message;
-    telegram("deleteMessage", { chat_id: msg.chat.id, message_id: msg.message_id }).catch(() => {});
-    const wasExtend = pending.type === "extend";
-    const next = await answer(text);
-    // Une réponse invalide à un oui/non : on le redit sur Telegram (les autres suites y sont déjà envoyées).
-    if (wasExtend && pending?.type === "extend") await telegram("sendMessage", { chat_id: OWNER, text: next }).catch(() => {});
-  }
-  return JSON.stringify(json);
 }
 
 // La demande en cours, telle que la personne la voit (sans aucune valeur).
@@ -466,13 +526,13 @@ async function startRequest(res, request) {
   }
   save();
   log("secret.requested", { request: pending.id, type: pending.type, names: pending.names ?? pending.fields.map((f) => f.name), hosts: pending.hosts, readOnly: pending.readOnly, purpose: pending.purpose });
-  return reply(res, 202, { id: pending.id, status: "demandé à la personne (sur Telegram et sur sa machine) ; tu seras prévenu par ta boîte de dépôt" });
+  return reply(res, 202, { id: pending.id, status: "demandé à la personne (prévenue sur Telegram, elle répond depuis sa machine) ; tu seras prévenu par ta boîte de dépôt" });
 }
 
 // Ce que le dot peut demander et consulter (jamais les valeurs).
 async function control(req, res, path) {
   if (req.method === "GET" && path === "secrets") {
-    const list = Object.entries(vault.secrets).map(([name, s]) => ({ name, hosts: s.hosts, readOnly: !!s.readOnly, kind: s.oauth ? "oauth" : "valeur" }));
+    const list = Object.entries(vault.secrets).filter(([, s]) => filled(s)).map(([name, s]) => ({ name, hosts: s.hosts, readOnly: !!s.readOnly, kind: s.oauth ? "oauth" : "valeur" }));
     const waiting = pending ? { id: pending.id, type: pending.type, names: pending.names ?? pending.fields.map((f) => f.name) } : null;
     return reply(res, 200, { secrets: list, pending: waiting });
   }
@@ -573,7 +633,7 @@ async function onRequest(req, res) {
         '  {"secrets": [{"name": "SERVICE_USER", "label": "Identifiant du service"}], "hosts": ["*.example.com"], "readOnly": true, "purpose": "…"}',
         "",
         "Secrets disponibles :",
-        ...Object.entries(vault.secrets).map(([n, s]) => `- ${n} → ${s.hosts.join(", ")}${s.readOnly ? " (lecture seule)" : ""}`),
+        ...Object.entries(vault.secrets).filter(([, s]) => filled(s)).map(([n, s]) => `- ${n} → ${s.hosts.join(", ")}${s.readOnly ? " (lecture seule)" : ""}`),
       ].join("\n"),
     );
   } catch (error) {
@@ -594,6 +654,8 @@ server.listen(PORT, "0.0.0.0", () => {
   if (pending) (expired() ? finish("expired") : ask(true)).catch(() => {});
 });
 setInterval(() => expired() && finish("expired").catch(() => {}), 60_000).unref();
+// La personne peut écrire dans le fichier à tout moment : il est relu dès qu'il change.
+setInterval(() => reload().catch((error) => log("vault.config.error", { error: error.message })), Number(process.env.VAULT_RELOAD_MS ?? 2000)).unref();
 
 // Porte d'administration, pour la personne depuis sa machine (./dot chat, ./dot secret) : elle
 // n'écoute que sur l'interface interne du coffre, que le dot ne peut pas joindre. La machine y

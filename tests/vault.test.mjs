@@ -10,7 +10,7 @@ import { join } from "node:path";
 const src = process.env.DOT_SRC ?? "/src";
 const dir = mkdtempSync(join(tmpdir(), "dot-vault-"));
 const CONFIG = join(dir, "test.dot"); // un vrai fichier de dot : en-tête, puis env et vault
-const { readVault } = await import(`${src}/dotfile.mjs`);
+const { patchVault, readVault } = await import(`${src}/dotfile.mjs`);
 const secretsNow = () => readVault(CONFIG).secrets;
 const INBOX = join(dir, "inbox");
 const OWNER = 42;
@@ -46,6 +46,23 @@ let vaultPort;
 const adminPort = 40000 + Math.floor(Math.random() * 20000);
 const listen = (server) => new Promise((r) => server.listen(0, "127.0.0.1", () => r(server.address().port)));
 
+const startVault = () =>
+  spawn(process.execPath, [`${src}/vault/vault.mjs`], {
+    env: { ...process.env, VAULT_CONFIG: CONFIG, VAULT_LOGS: join(dir, "logs"), VAULT_INBOX: INBOX, VAULT_PORT: String(vaultPort), TELEGRAM_OWNER_ID: String(OWNER), VAULT_TELEGRAM_API: `http://127.0.0.1:${telegramPort}`, VAULT_ADMIN_PORT: String(adminPort), DOT_NAME: "test", DOT_FILE: "/home/moi/dots/test/test.dot", VAULT_RELOAD_MS: "100" },
+    stdio: "ignore",
+  });
+async function waitVault() {
+  for (let i = 0; i < 50; i += 1) {
+    try {
+      await fetch(`http://127.0.0.1:${vaultPort}/`);
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  throw new Error("le coffre ne démarre pas");
+}
+
 before(async () => {
   servicePort = await listen(service);
   telegramPort = await listen(telegram);
@@ -63,19 +80,8 @@ before(async () => {
       allow: [],
     }),
   );
-  vault = spawn(process.execPath, [`${src}/vault/vault.mjs`], {
-    env: { ...process.env, VAULT_CONFIG: CONFIG, VAULT_LOGS: join(dir, "logs"), VAULT_INBOX: INBOX, VAULT_PORT: String(vaultPort), TELEGRAM_OWNER_ID: String(OWNER), VAULT_TELEGRAM_API: `http://127.0.0.1:${telegramPort}`, VAULT_ADMIN_PORT: String(adminPort) },
-    stdio: "ignore",
-  });
-  for (let i = 0; i < 50; i += 1) {
-    try {
-      await fetch(`http://127.0.0.1:${vaultPort}/`);
-      return;
-    } catch {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
-  throw new Error("le coffre ne démarre pas");
+  vault = startVault();
+  await waitVault();
 });
 
 after(() => {
@@ -130,114 +136,101 @@ test("une demande mal formée est refusée", async () => {
 // La lecture des messages par le dot, à travers le coffre.
 const poll = async () => (await call(`/http/127.0.0.1:${telegramPort}/bot{{TELEGRAM_TOKEN}}/getUpdates`, { method: "POST", body: "{}" })).json();
 const fromOwner = (id, text) => ({ update_id: id, message: { message_id: 100 + id, chat: { id: OWNER, type: "private" }, from: { id: OWNER }, text } });
+// La porte d'administration : celle de ./dot secret, sur la machine.
+const admin = (path, init) => fetch(`http://127.0.0.1:${adminPort}${path}`, init).then((r) => r.json());
+const answer = async (text) => {
+  const { pending } = await admin("/pending");
+  return admin("/answer", { method: "POST", body: JSON.stringify({ id: pending.id, text }) });
+};
+const request = (path, body) => call(`/_vault/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-test("demande de secret : la réponse est interceptée, enregistrée, effacée, et le dot prévenu", async () => {
-  const res = await call("/_vault/request", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ secrets: [{ name: "NEW_USER", label: "Identifiant" }, { name: "NEW_PASS", label: "Mot de passe" }], hosts: ["api.example.com"], readOnly: true, purpose: "test" }),
-  });
+test("demande de secret : Telegram prévient sans rien demander, la réponse vient de la machine", async () => {
+  const res = await request("request", { secrets: [{ name: "NEW_USER", label: "Identifiant" }, { name: "NEW_PASS", label: "Mot de passe" }], hosts: ["api.example.com"], readOnly: true, purpose: "test" });
   assert.equal(res.status, 202);
-  assert.match(sent.at(-1), /api\.example\.com/);
-  assert.match(sent.at(-1), /Identifiant/);
+  const notice = sent.at(-1);
+  assert.match(notice, /api\.example\.com/);
+  assert.match(notice, /Identifiant \(NEW_USER\)/);
+  assert.match(notice, /Mot de passe \(NEW_PASS\)/);
+  assert.match(notice, /\.\/dot @test secret/, "la notification dit quelle commande lancer");
+  assert.match(notice, /\/home\/moi\/dots\/test\/test\.dot/, "et où est le fichier");
+  assert.match(notice, /NEW_USER: { value: "", hosts: \[ api\.example\.com \], readOnly: true }  # Identifiant/, "avec la ligne à coller");
 
   // Une deuxième demande en même temps est refusée.
-  assert.equal((await call("/_vault/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["OTHER"], hosts: ["a.example.com"], purpose: "x" }) })).status, 409);
+  assert.equal((await request("request", { secrets: ["OTHER"], hosts: ["a.example.com"], purpose: "x" })).status, 409);
 
-  updates = [fromOwner(1, "alice")];
-  const first = await poll();
-  assert.equal(first.result[0].update_id, 1);
-  assert.equal(first.result[0].message, undefined, "le dot ne doit pas voir la réponse");
-  assert.match(sent.at(-1), /Mot de passe/);
-
-  updates = [fromOwner(2, "p4ss")];
-  const second = await poll();
-  assert.equal(second.result[0].message, undefined);
+  const before = sent.length;
+  assert.equal((await answer("alice")).pending.name, "NEW_PASS");
+  assert.equal(sent.length, before, "rien n'est envoyé sur Telegram entre deux valeurs");
+  assert.match((await answer("p4ss")).message, /Enregistré/);
   await new Promise((r) => setTimeout(r, 200));
 
-  assert.deepEqual(deleted.slice(-2), [101, 102], "les messages sont effacés du fil");
   const saved = secretsNow();
   assert.equal(saved.NEW_USER.value, "alice");
   assert.equal(saved.NEW_PASS.value, "p4ss");
   assert.deepEqual(saved.NEW_PASS.hosts, ["api.example.com"]);
   assert.equal(saved.NEW_PASS.readOnly, true);
   assert.match(sent.at(-1), /Enregistré/);
+  assert.doesNotMatch(sent.join("\n"), /alice|p4ss/, "aucune valeur ne passe par Telegram");
   const notes = readdirSync(INBOX).map((f) => readFileSync(join(INBOX, f), "utf8")).join("\n");
   assert.match(notes, /NEW_USER/);
   assert.doesNotMatch(notes, /alice|p4ss/, "la note au dot ne contient pas les valeurs");
 });
 
+test("pendant une demande, la conversation Telegram reste au dot, intacte", async () => {
+  await request("request", { secrets: ["CONV_TEST"], hosts: ["a.example.com"], purpose: "x" });
+  updates = [fromOwner(1, "attends, c'est pour quoi ?"), fromOwner(2, "/plan"), fromOwner(3, "/mon_skill@mon_bot")];
+  const texts = (await poll()).result.map((u) => u.message?.text);
+  assert.deepEqual(texts, ["attends, c'est pour quoi ?", "/plan", "/mon_skill@mon_bot"]);
+  assert.deepEqual(deleted, [], "le coffre n'efface rien du fil");
+  assert.equal((await admin("/pending")).pending.name, "CONV_TEST", "la demande attend toujours sa réponse");
+  await answer("/annuler");
+});
+
 test("hors demande, les messages arrivent normalement au dot", async () => {
-  updates = [fromOwner(3, "bonjour")];
+  updates = [fromOwner(4, "bonjour")];
   assert.equal((await poll()).result[0].message.text, "bonjour");
 });
 
 test("/annuler annule la demande sans rien enregistrer", async () => {
-  await call("/_vault/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["CANCELLED"], hosts: ["a.example.com"], purpose: "x" }) });
-  updates = [fromOwner(4, "/annuler")];
-  assert.equal((await poll()).result[0].message, undefined);
+  await request("request", { secrets: ["CANCELLED"], hosts: ["a.example.com"], purpose: "x" });
+  assert.match((await answer("/annuler")).message, /annulée/);
   await new Promise((r) => setTimeout(r, 200));
   assert.equal(secretsNow().CANCELLED, undefined);
   assert.match(sent.at(-1), /annulée/);
 });
 
-test("élargir un secret : oui ajoute le serveur, et rien ne fuit vers le dot", async () => {
-  const res = await call("/_vault/extend", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["KEY"], hosts: ["api.example.com"], purpose: "autre serveur du service" }) });
+test("élargir un secret : oui ajoute le serveur", async () => {
+  const res = await request("extend", { secrets: ["KEY"], hosts: ["api.example.com"], purpose: "autre serveur du service" });
   assert.equal(res.status, 202);
-  assert.match(sent.at(-1), /oui ou non/);
-  updates = [fromOwner(5, "peut-être")];
-  assert.equal((await poll()).result[0].message, undefined);
-  assert.match(sent.at(-1), /oui ou non/);
-  updates = [fromOwner(6, "oui")];
-  await poll();
+  assert.match(sent.at(-1), /élargir/);
+  assert.match(sent.at(-1), /api\.example\.com/);
+  assert.match((await answer("peut-être")).message, /oui ou non/);
+  await answer("oui");
   await new Promise((r) => setTimeout(r, 200));
   assert.deepEqual(secretsNow().KEY.hosts, [`127.0.0.1:${servicePort}`, "api.example.com"]);
   assert.match(sent.at(-1), /élargi/);
 });
 
 test("élargir un secret inconnu est refusé ; non n'ajoute rien", async () => {
-  assert.equal((await call("/_vault/extend", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["NOPE"], hosts: ["a.example.com"], purpose: "x" }) })).status, 400);
-  await call("/_vault/extend", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["USER"], hosts: ["b.example.com"], purpose: "x" }) });
-  updates = [fromOwner(7, "non")];
-  await poll();
+  assert.equal((await request("extend", { secrets: ["NOPE"], hosts: ["a.example.com"], purpose: "x" })).status, 400);
+  await request("extend", { secrets: ["USER"], hosts: ["b.example.com"], purpose: "x" });
+  await answer("non");
   await new Promise((r) => setTimeout(r, 200));
   assert.ok(!secretsNow().USER.hosts.includes("b.example.com"));
 });
 
-test("pendant une demande, les commandes du bot passent au dot", async () => {
-  await call("/_vault/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["CMD_TEST"], hosts: ["a.example.com"], purpose: "x" }) });
-  updates = [fromOwner(8, "/status")];
-  assert.equal((await poll()).result[0].message.text, "/status");
-  updates = [fromOwner(9, "/annuler")];
-  await poll();
-  await new Promise((r) => setTimeout(r, 200));
-});
-
 test("une demande en cours survit à un redémarrage du coffre", async () => {
-  await call("/_vault/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: ["PERSIST_A", "PERSIST_B"], hosts: ["a.example.com"], purpose: "redémarrage" }) });
-  updates = [fromOwner(10, "valeur-a")];
-  await poll();
-  await new Promise((r) => setTimeout(r, 200));
+  await request("request", { secrets: ["PERSIST_A", "PERSIST_B"], hosts: ["a.example.com"], purpose: "redémarrage" });
+  await answer("valeur-a");
   assert.equal(readVault(CONFIG)._pending.index, 1);
   // Redémarrage : nouveau coffre sur le même fichier.
   vault.kill();
   await new Promise((r) => setTimeout(r, 300));
-  vault = spawn(process.execPath, [`${src}/vault/vault.mjs`], {
-    env: { ...process.env, VAULT_CONFIG: CONFIG, VAULT_LOGS: join(dir, "logs"), VAULT_INBOX: INBOX, VAULT_PORT: String(vaultPort), TELEGRAM_OWNER_ID: String(OWNER), VAULT_TELEGRAM_API: `http://127.0.0.1:${telegramPort}`, VAULT_ADMIN_PORT: String(adminPort) },
-    stdio: "ignore",
-  });
-  for (let i = 0; i < 50; i += 1) {
-    try {
-      await fetch(`http://127.0.0.1:${vaultPort}/`);
-      break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  }
+  vault = startVault();
+  await waitVault();
   await new Promise((r) => setTimeout(r, 300));
   assert.match(sent.at(-1), /redémarré/);
-  updates = [fromOwner(11, "valeur-b")];
-  await poll();
+  await answer("valeur-b");
   await new Promise((r) => setTimeout(r, 200));
   const saved = readVault(CONFIG);
   assert.equal(saved.secrets.PERSIST_A.value, "valeur-a");
@@ -247,8 +240,66 @@ test("une demande en cours survit à un redémarrage du coffre", async () => {
   assert.match(readFileSync(CONFIG, "utf8"), /^---\nname: test/, "et son en-tête");
 });
 
+// La personne écrit dans le fichier, comme avec son éditeur.
+const byHand = (secrets) => patchVault(CONFIG, { secrets });
+const settle = () => new Promise((r) => setTimeout(r, 400));
+
+test("une demande remplie à la main dans le fichier se termine toute seule", async () => {
+  await request("request", { secrets: [{ name: "HAND_A", label: "A" }], hosts: ["a.example.com"], purpose: "à la main" });
+  byHand({ HAND_A: { value: "", hosts: ["a.example.com"], readOnly: true } });
+  await settle();
+  assert.equal((await admin("/pending")).pending?.name, "HAND_A", "une ligne collée mais pas remplie ne compte pas");
+  assert.equal((await call(svc("/"), { headers: { authorization: "Bearer {{HAND_A}}" } })).status, 400);
+  byHand({ HAND_A: { value: "écrit-à-la-main", hosts: ["a.example.com"], readOnly: true } });
+  await settle();
+  assert.equal((await admin("/pending")).pending, null);
+  assert.equal(secretsNow().HAND_A.value, "écrit-à-la-main");
+  assert.match(sent.at(-1), /Enregistré dans le coffre \(dans le fichier\) : HAND_A/);
+  const notes = readdirSync(INBOX).map((f) => readFileSync(join(INBOX, f), "utf8")).join("\n");
+  assert.match(notes, /HAND_A/);
+  assert.doesNotMatch(notes, /écrit-à-la-main/);
+});
+
+test("moitié à la main, moitié depuis la machine : la machine ne redemande pas ce qui est écrit", async () => {
+  await request("request", { secrets: [{ name: "MIX_A", label: "A" }, { name: "MIX_B", label: "B" }, { name: "MIX_C", label: "C" }], hosts: ["a.example.com"], purpose: "mixte" });
+  byHand({ MIX_B: { value: "b-main", hosts: ["a.example.com"] } });
+  await settle();
+  assert.equal((await answer("a-machine")).pending.name, "MIX_C", "MIX_B est sauté");
+  await answer("c-machine");
+  await settle();
+  const saved = secretsNow();
+  assert.deepEqual([saved.MIX_A.value, saved.MIX_B.value, saved.MIX_C.value], ["a-machine", "b-main", "c-machine"]);
+});
+
+test("élargir à la main : la demande se termine quand les serveurs sont dans hosts", async () => {
+  await request("extend", { secrets: ["HAND_A"], hosts: ["b.example.com"], purpose: "ailleurs" });
+  assert.match(sent.at(-1), /HAND_A: { …, hosts: \[ a\.example\.com, b\.example\.com \] }/);
+  byHand({ HAND_A: { value: "écrit-à-la-main", hosts: ["a.example.com", "b.example.com"], readOnly: true } });
+  await settle();
+  assert.equal((await admin("/pending")).pending, null);
+  assert.match(sent.at(-1), /Accès élargi \(dans le fichier\)/);
+});
+
+test("un secret ajouté à la main n'est jamais retiré par le coffre", async () => {
+  byHand({ ADDED: { value: "ajouté", hosts: ["a.example.com"] } });
+  await request("request", { secrets: ["SAVE_TRIGGER"], hosts: ["a.example.com"], purpose: "x" }); // le coffre écrit sa demande
+  await answer("/annuler");
+  await settle();
+  assert.equal(secretsNow().ADDED.value, "ajouté");
+});
+
+test("un fichier mal formé : le coffre garde la version précédente et prévient", async () => {
+  const good = readFileSync(CONFIG, "utf8");
+  writeFileSync(CONFIG, good.replace("vault:", "vault: [cassé"));
+  await settle();
+  assert.match(sent.at(-1), /ne peut pas relire \/home\/moi\/dots\/test\/test\.dot/);
+  const a = await (await call(svc("/v1"), { headers: { authorization: "Bearer {{KEY}}" } })).json();
+  assert.equal(a.auth, "Bearer s3cret-key", "les secrets marchent toujours");
+  writeFileSync(CONFIG, good);
+  await settle();
+});
+
 test("depuis la machine : la demande se lit sans valeur, la réponse va directement au coffre", async () => {
-  const admin = (path, init) => fetch(`http://127.0.0.1:${adminPort}${path}`, init).then((r) => r.json());
   await call("/_vault/request", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ secrets: [{ name: "LOCAL_A", label: "Identifiant" }, { name: "LOCAL_B", label: "Mot de passe" }], hosts: ["a.example.com"], purpose: "local" }) });
   const first = (await admin("/pending")).pending;
   assert.equal(first.name, "LOCAL_A");

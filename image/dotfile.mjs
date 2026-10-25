@@ -51,24 +51,23 @@ export function readVault(file) {
   return { secrets: vault.secrets ?? {}, allow: vault.allow ?? [], _pending: vault._pending };
 }
 
-// Le coffre écrit ses changements secret par secret : le reste du fichier (en-tête, env, model,
-// commentaires, ordre) ne bouge pas.
-export function writeVault(file, vault) {
+// Le coffre n'écrit que ce qu'il change : les secrets nommés dans `secrets`, et sa demande en cours
+// (`pending`, null pour l'effacer). Il ne retire jamais un secret, ne touche ni à `allow` ni au reste
+// du fichier : ce que la personne a écrit à la main pendant ce temps est gardé, commentaires compris.
+export function patchVault(file, { secrets = {}, pending } = {}) {
   const text = readFileSync(file, "utf8");
-  const docs = YAML.parseAllDocuments(text);
-  const body = docs[1];
+  // Un fichier mal formé (la personne est peut-être en train de l'écrire) n'est jamais réécrit.
+  const { body } = parse(text);
   const current = body.toJS()?.vault?.secrets ?? {};
-  for (const name of Object.keys(current)) if (!(name in vault.secrets)) body.deleteIn(["vault", "secrets", name]);
-  for (const [name, secret] of Object.entries(vault.secrets)) {
+  for (const [name, secret] of Object.entries(secrets)) {
     if (JSON.stringify(current[name]) !== JSON.stringify(secret)) body.setIn(["vault", "secrets", name], body.createNode(secret, { flow: true }));
   }
-  if (JSON.stringify(body.getIn(["vault", "allow"])?.toJSON?.() ?? []) !== JSON.stringify(vault.allow ?? [])) body.setIn(["vault", "allow"], vault.allow ?? []);
-  if (vault._pending) body.setIn(["vault", "_pending"], vault._pending);
-  else if (body.hasIn(["vault", "_pending"])) body.deleteIn(["vault", "_pending"]);
+  if (pending) body.setIn(["vault", "_pending"], pending);
+  else if (pending === null && body.hasIn(["vault", "_pending"])) body.deleteIn(["vault", "_pending"]);
   // L'en-tête est recopié tel quel (de la première ligne --- à la seconde).
   const head = /^---\n[\s\S]*?\n---\n/.exec(text)?.[0] ?? "---\n---\n";
   const out = head + body.toString({ lineWidth: 0 }).replace(/^---\n/, "");
-  // En place (le fichier est monté seul dans le coffre : pas de renommage possible).
+  // En place : le fichier garde son propriétaire et ses droits (lisible par la personne seule).
   writeFileSync(file, out);
 }
 

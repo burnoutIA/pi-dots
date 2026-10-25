@@ -126,12 +126,17 @@ start_vault() {
   local args=(
     -d --name "$VAULT" --hostname dot-vault
     --memory 256m --cpus 1 --pids-limit 256
-    # Le fichier du dot, en écriture : le coffre met à jour son nœud vault (secrets donnés par la personne).
-    -v "$DOTFILE:/vault/dot.dot"
+    # Le dossier du dot, pour son fichier .dot : le coffre y écrit les secrets donnés par la personne,
+    # et le relit quand elle le modifie. Le dossier entier, et non le fichier seul : un éditeur qui
+    # enregistre en remplaçant le fichier laisserait sinon le coffre sur l'ancienne version.
+    -v "$DIR:/vault/dir"
+    -e "VAULT_CONFIG=/vault/dir/$(basename "$DOTFILE")"
+    -e "DOT_FILE=$DOTFILE"
     -v "$STATE/logs:/logs"
     -v "$STATE/inbox:/inbox"
     -e "TZ=$(setting TZ)"
     -e "TELEGRAM_OWNER_ID=$(setting TELEGRAM_OWNER_ID)"
+    -e "DOT_NAME=$NAME"
     --add-host host.docker.internal:host-gateway
     --entrypoint node
   )
