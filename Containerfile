@@ -14,6 +14,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       bash ca-certificates curl git jq less nano procps python3 python3-pip python3-venv \
       ripgrep fd-find sudo tini tmux tzdata unzip wget \
+      poppler-utils tesseract-ocr tesseract-ocr-fra tesseract-ocr-eng ocrmypdf \
  && ln -s /usr/bin/fdfind /usr/local/bin/fd \
  && echo "node ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/node \
  && echo 'Defaults env_keep += "http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY"' > /etc/sudoers.d/proxy \
