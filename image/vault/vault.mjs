@@ -406,8 +406,11 @@ async function relay(req, res, scheme, rest, search) {
     if (HOP.has(name)) continue;
     headers[name] = Array.isArray(value) ? value : await substitute(String(value), used);
   }
+  // Le corps n'est rempli que sur demande (en-tête x-vault-body: fill) : un appel au modèle transporte
+  // la conversation, où {{NOM}} apparaît comme du texte, et ne doit jamais recevoir de valeur.
+  delete headers["x-vault-body"];
   let body;
-  const encode = bodyEncoder(req.headers["content-type"]);
+  const encode = req.headers["x-vault-body"] === "fill" ? bodyEncoder(req.headers["content-type"]) : null;
   if (encode && !READ_METHODS.has(String(req.method).toUpperCase())) {
     body = Buffer.from(await substitute(await readText(req), used, encode), "utf8");
     headers["content-length"] = String(body.length);
@@ -725,7 +728,8 @@ async function onRequest(req, res) {
         "dot-vault — tes secrets, sans leurs valeurs.",
         "",
         "Relais : http://dot-vault:8080/https/<serveur>/<chemin> (ou /http/…), avec {{NOM}} dans l'adresse, les en-têtes",
-        "         ou un corps JSON / formulaire / texte (POST, PUT…), et {{basic:USER:PASS}} pour un en-tête Authorization: Basic.",
+        "         ou un corps JSON / formulaire / texte (POST, PUT… avec l'en-tête x-vault-body: fill),",
+        "         et {{basic:USER:PASS}} pour un en-tête Authorization: Basic.",
         "         Un secret en lecture seule n'accepte que GET/HEAD : pour un login en POST, demande-le avec \"readOnly\": false.",
         "Secrets : GET http://dot-vault:8080/_vault/secrets",
         "Demander un secret : POST http://dot-vault:8080/_vault/request",

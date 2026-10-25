@@ -1082,7 +1082,7 @@ function registerTools(pi: ExtensionAPI) {
     label: "secret",
     description:
       "Your secrets live in the vault, never with you. You only know their NAMES; the vault puts the values in your requests. " +
-      "To call a service through the vault: http://dot-vault:8080/https/<host>/<path> (or /http/…), writing {{NAME}} where a secret goes (URL, header, or a JSON/form/text body, e.g. a login POST), " +
+      "To call a service through the vault: http://dot-vault:8080/https/<host>/<path> (or /http/…), writing {{NAME}} where a secret goes (URL, header, or a JSON/form/text body such as a login POST, which also needs the header `x-vault-body: fill`), " +
       "e.g. `Authorization: Bearer {{API_TOKEN}}` or `Authorization: Basic {{basic:SERVICE_USER:SERVICE_PASSWORD}}`; for mail (IMAP, read-only): POST http://dot-vault:8080/_vault/mail (see `curl http://dot-vault:8080/`). A secret only goes to its allowed hosts. " +
       "action `list`: the secrets that exist (names, allowed hosts, read-only), never their values. " +
       "action `request`: ask the person for missing secrets; the vault notifies them on Telegram if it is set up (otherwise tell them in the conversation) and they answer from their machine, so you never see the values; " +

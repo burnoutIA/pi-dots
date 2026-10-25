@@ -114,16 +114,16 @@ test("les marqueurs sont remplacés dans les en-têtes et l'adresse", async () =
 });
 
 test("les marqueurs sont remplacés dans un corps JSON ou formulaire, échappés selon le format", async () => {
-  await call(svc("/login"), { method: "POST", headers: { "content-type": "application/json" }, body: '{"username":"{{KEY}}","password":"{{LOGIN_PASS}}"}' }).then((r) => r.text());
+  await call(svc("/login"), { method: "POST", headers: { "content-type": "application/json", "x-vault-body": "fill" }, body: '{"username":"{{KEY}}","password":"{{LOGIN_PASS}}"}' }).then((r) => r.text());
   assert.deepEqual(JSON.parse(seen.body), { username: "s3cret-key", password: 'a"b\\c&d=e' });
-  await call(svc("/login"), { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "u={{KEY}}&p={{LOGIN_PASS}}" }).then((r) => r.text());
+  await call(svc("/login"), { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", "x-vault-body": "fill" }, body: "u={{KEY}}&p={{LOGIN_PASS}}" }).then((r) => r.text());
   assert.equal(new URLSearchParams(seen.body).get("p"), 'a"b\\c&d=e');
-  await call(svc("/up"), { method: "POST", headers: { "content-type": "application/octet-stream", authorization: "Bearer {{KEY}}" }, body: "{{KEY}}" }).then((r) => r.text());
+  await call(svc("/up"), { method: "POST", headers: { "content-type": "application/octet-stream", "x-vault-body": "fill", authorization: "Bearer {{KEY}}" }, body: "{{KEY}}" }).then((r) => r.text());
   assert.equal(seen.body, "{{KEY}}"); // binaire : jamais touché
 });
 
 test("un serveur qui renvoie ce qu'il reçoit ne fait pas sortir les secrets", async () => {
-  const res = await call(svc("/x/{{KEY}}"), { method: "POST", headers: { "content-type": "application/json" }, body: '{"p":"{{LOGIN_PASS}}"}' });
+  const res = await call(svc("/x/{{KEY}}"), { method: "POST", headers: { "content-type": "application/json", "x-vault-body": "fill" }, body: '{"p":"{{LOGIN_PASS}}"}' });
   const basic = await (await call(svc("/b"), { headers: { authorization: "Basic {{basic:USER:PASS}}" } })).text();
   const text = (await res.text()) + basic;
   assert.equal(seen.url, "/b");
@@ -134,8 +134,15 @@ test("un serveur qui renvoie ce qu'il reçoit ne fait pas sortir les secrets", a
   assert.equal(res.headers.get("x-echo-url"), "/x/{{KEY}}");
 });
 
+test("sans x-vault-body, le corps passe tel quel (une conversation envoyée au modèle)", async () => {
+  const body = '{"messages":[{"content":"écris {{NAME}} ou {{KEY}} là où va un secret"}]}';
+  const res = await call(svc("/v1/chat"), { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer {{KEY}}" }, body });
+  assert.equal(res.status, 200);
+  assert.equal(seen.body, body);
+});
+
 test("un secret dans le corps obéit aux mêmes règles : serveurs et lecture seule", async () => {
-  const post = (body) => call(svc("/login"), { method: "POST", headers: { "content-type": "application/json" }, body });
+  const post = (body) => call(svc("/login"), { method: "POST", headers: { "content-type": "application/json", "x-vault-body": "fill" }, body });
   assert.equal((await post('{"p":"{{USER}}"}')).status, 403);
   assert.equal((await post('{"p":"{{ELSEWHERE}}"}')).status, 403);
 });
