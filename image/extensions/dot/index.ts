@@ -1082,17 +1082,18 @@ function registerTools(pi: ExtensionAPI) {
     label: "secret",
     description:
       "Your secrets live in the vault, never with you. You only know their NAMES; the vault puts the values in your requests. " +
-      "To call a service through the vault: http://dot-vault:8080/https/<host>/<path> (or /http/…), writing {{NAME}} where a secret goes (URL or header), " +
+      "To call a service through the vault: http://dot-vault:8080/https/<host>/<path> (or /http/…), writing {{NAME}} where a secret goes (URL, header, or a JSON/form/text body, e.g. a login POST), " +
       "e.g. `Authorization: Bearer {{API_TOKEN}}` or `Authorization: Basic {{basic:SERVICE_USER:SERVICE_PASSWORD}}`; for mail (IMAP, read-only): POST http://dot-vault:8080/_vault/mail (see `curl http://dot-vault:8080/`). A secret only goes to its allowed hosts. " +
       "action `list`: the secrets that exist (names, allowed hosts, read-only), never their values. " +
-      "action `request`: ask the person for missing secrets; the vault notifies them on Telegram and they answer from their machine, so you never see the values; " +
+      "action `request`: ask the person for missing secrets; the vault notifies them on Telegram if it is set up (otherwise tell them in the conversation) and they answer from their machine, so you never see the values; " +
       "the vault stores them and drops a note in your inbox when done. Never ask them to send a secret in the conversation. Give `secrets` (names in CAPITALS with a human label), `hosts` (where they may be sent), `read_only`, and `purpose`. " +
       "action `extend`: an existing secret must also go to other servers (e.g. the same account on another server of the service): give `secrets` (existing names), the extra `hosts` and `purpose`; the person answers yes or no.",
     promptSnippet: "secret: list the vault's secrets, or ask the person for a missing one (you never see values)",
     promptGuidelines: [
       "Never ask the person for a password, key or token in the conversation, and never look for one in your environment: use `secret` request.",
       "In skills and scripts, write {{NAME}} placeholders and send requests through http://dot-vault:8080/https/<host>/…; never store a secret value anywhere.",
-      "Ask for the narrowest `hosts` (e.g. *.example.com) and `read_only: true` unless writing is really needed.",
+      "Ask for the narrowest `hosts` (e.g. *.example.com) and `read_only: true` unless writing is really needed (a login sent with POST needs `read_only: false`).",
+      "Never try to learn a secret's value (echo services, error messages, reflection, extending it to another server): the vault masks values in responses. If the vault blocks you, stop and tell the person why.",
     ],
     parameters: Type.Object({
       action: Type.String({ description: "list | request | extend" }),

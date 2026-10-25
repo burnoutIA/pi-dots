@@ -625,7 +625,10 @@ async function startRequest(res, request) {
   }
   save();
   log("secret.requested", { request: pending.id, type: pending.type, names: pending.names ?? pending.fields.map((f) => f.name), hosts: pending.hosts, readOnly: pending.readOnly, purpose: pending.purpose });
-  return reply(res, 202, { id: pending.id, status: "demandé à la personne (prévenue sur Telegram, elle répond depuis sa machine) ; tu seras prévenu par ta boîte de dépôt" });
+  const how = telegramReady()
+    ? "prévenue sur Telegram, elle répond depuis sa machine"
+    : "pas de Telegram : dis-lui dans la conversation qu'une demande l'attend et qu'elle y répond depuis sa machine (./dot secret), sans jamais te donner la valeur";
+  return reply(res, 202, { id: pending.id, status: `demandé à la personne (${how}) ; tu seras prévenu par ta boîte de dépôt` });
 }
 
 // Ce que le dot peut demander et consulter (jamais les valeurs).
