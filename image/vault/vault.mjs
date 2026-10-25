@@ -8,8 +8,10 @@
 //   Authorization: Basic {{basic:SERVICE_USER:SERVICE_PASSWORD}}
 //   Authorization: Bearer {{MODEL_KEY}}
 //
-// Le remplacement se fait dans l'adresse et les en-têtes, et seulement si le serveur visé est dans
-// les `hosts` du secret ; un secret `readOnly` n'accompagne que des lectures.
+// Le remplacement se fait dans l'adresse, les en-têtes et un corps texte, et seulement si le serveur
+// visé est dans les `hosts` du secret ; un secret `readOnly` n'accompagne que des lectures. Dans la
+// réponse, les valeurs utilisées redeviennent {{NOM}} : un serveur qui renvoie ce qu'il reçoit (une
+// erreur qui cite l'adresse, un écho) ne les fait pas sortir.
 //
 // Quand il manque un secret, le dot le demande (POST /_vault/request). Le coffre prévient la
 // personne sur Telegram, mais elle répond toujours depuis sa machine (./dot secret), par une porte
@@ -26,6 +28,7 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import { join } from "node:path";
+import { Transform } from "node:stream";
 import { patchVault, readVault } from "../dotfile.mjs";
 import { readMail } from "./imap.mjs";
 
@@ -212,7 +215,9 @@ async function substitute(text, used, encode = (v) => v) {
     const parts = match[1].split(":");
     if (parts[0].toLowerCase() === "basic" && parts.length === 3) {
       used.add(parts[1]).add(parts[2]);
-      values.push(encode(Buffer.from(`${await valueOf(parts[1])}:${await valueOf(parts[2])}`).toString("base64")));
+      const basic = Buffer.from(`${await valueOf(parts[1])}:${await valueOf(parts[2])}`).toString("base64");
+      (used.derived ??= new Map()).set(basic, `{{basic:${parts[1]}:${parts[2]}}}`);
+      values.push(encode(basic));
     } else {
       used.add(parts[0]);
       values.push(encode(await valueOf(parts[0])));
@@ -295,7 +300,55 @@ function onConnect(req, client, head) {
 
 const HOP = new Set(["connection", "keep-alive", "proxy-connection", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host"]);
 
-function forward(req, res, target, headers, address, { onStatus, body } = {}) {
+// --- Masquage des réponses ------------------------------------------------------------------------
+
+// Les valeurs utilisées par la requête, sous leurs formes courantes (brute, dans une adresse, dans du
+// JSON), à remplacer par leur nom dans la réponse. Trop courte, une valeur ne se masque pas : elle
+// abîmerait tout le texte.
+async function redactions(used) {
+  const pairs = new Map();
+  const add = (value, label) => {
+    for (const form of new Set([value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)])) {
+      if (form.length >= 4) pairs.set(form, label);
+    }
+  };
+  for (const name of used) add(await valueOf(name), `{{${name}}}`);
+  for (const [value, label] of used.derived ?? []) add(value, label);
+  return [...pairs].map(([value, label]) => [Buffer.from(value), Buffer.from(label)]);
+}
+
+function scrub(buf, pairs) {
+  for (const [needle, label] of pairs) {
+    let start = 0;
+    let i;
+    const parts = [];
+    while ((i = buf.indexOf(needle, start)) !== -1) {
+      parts.push(buf.subarray(start, i), label);
+      start = i + needle.length;
+    }
+    if (parts.length) buf = Buffer.concat([...parts, buf.subarray(start)]);
+  }
+  return buf;
+}
+
+// En flux : on garde la fin de chaque morceau, au cas où une valeur serait coupée entre deux.
+function redactor(pairs) {
+  const keep = Math.max(...pairs.map(([needle]) => needle.length)) - 1;
+  let tail = Buffer.alloc(0);
+  return new Transform({
+    transform(chunk, _encoding, done) {
+      const buf = scrub(Buffer.concat([tail, chunk]), pairs);
+      const cut = Math.max(0, buf.length - keep);
+      tail = buf.subarray(cut);
+      done(null, buf.subarray(0, cut));
+    },
+    flush(done) {
+      done(null, scrub(tail, pairs));
+    },
+  });
+}
+
+function forward(req, res, target, headers, address, { onStatus, body, redact = [] } = {}) {
   const out = { ...headers, host: target.host };
   const lib = target.protocol === "https:" ? https : http;
   const upstream = lib.request(
@@ -310,8 +363,17 @@ function forward(req, res, target, headers, address, { onStatus, body } = {}) {
     },
     (answer) => {
       onStatus?.(answer.statusCode ?? 502);
-      res.writeHead(answer.statusCode ?? 502, answer.headers);
-      answer.pipe(res);
+      if (!redact.length) {
+        res.writeHead(answer.statusCode ?? 502, answer.headers);
+        return answer.pipe(res);
+      }
+      const answerHeaders = {};
+      for (const [name, value] of Object.entries(answer.headers)) {
+        if (name === "content-length" || name === "transfer-encoding") continue; // la taille change
+        answerHeaders[name] = Array.isArray(value) ? value.map((v) => scrub(Buffer.from(v), redact).toString()) : scrub(Buffer.from(String(value)), redact).toString();
+      }
+      res.writeHead(answer.statusCode ?? 502, answerHeaders);
+      answer.pipe(redactor(redact)).pipe(res);
     },
   );
   upstream.on("error", (error) => {
@@ -364,9 +426,12 @@ async function relay(req, res, scheme, rest, search) {
   const named = [...used].some((name) => vault.secrets[name].hosts.some((p) => !p.startsWith("*") && matches(p, host, port)));
   const address = await resolveAllowed(host, port, named);
   if (!used.size) log("net.out", { method: req.method, host, port, relay: true });
+  // Une réponse compressée ne se relit pas : on la demande en clair dès qu'un secret est parti.
+  if (used.size) headers["accept-encoding"] = "identity";
 
   forward(req, res, target, headers, address, {
     body,
+    redact: used.size ? await redactions(used) : [],
     onStatus: (status) => {
       if (status === 401) for (const name of used) accessTokens.delete(name);
       if (status >= 500) log("net.error", { host, status, secrets: [...used] });

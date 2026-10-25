@@ -17,10 +17,16 @@ const OWNER = 42;
 
 // --- Faux service : renvoie ce qu'il reçoit ---
 let servicePort;
+// seen : ce que le service a vraiment reçu ; la réponse, elle, repasse par le masquage du coffre.
+let seen;
 const service = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
-  req.on("end", () => res.end(JSON.stringify({ method: req.method, url: req.url, auth: req.headers.authorization ?? null, body })));
+  req.on("end", () => {
+    seen = { method: req.method, url: req.url, auth: req.headers.authorization ?? null, body };
+    res.setHeader("x-echo-url", req.url);
+    res.end(JSON.stringify(seen));
+  });
 });
 
 // --- Faux Telegram : garde les messages envoyés, renvoie les mises à jour qu'on lui donne ---
@@ -99,21 +105,33 @@ const call = (path, init = {}) => fetch(`http://127.0.0.1:${vaultPort}${path}`, 
 const svc = (path) => `/http/127.0.0.1:${servicePort}${path}`;
 
 test("les marqueurs sont remplacés dans les en-têtes et l'adresse", async () => {
-  const a = await (await call(svc("/v1"), { headers: { authorization: "Bearer {{KEY}}" } })).json();
-  assert.equal(a.auth, "Bearer s3cret-key");
-  const b = await (await call(svc("/bot%7B%7BKEY%7D%7D/x"))).json();
-  assert.equal(b.url, "/bots3cret-key/x");
-  const c = await (await call(svc("/"), { method: "PROPFIND", headers: { authorization: "Basic {{basic:USER:PASS}}" } })).json();
-  assert.equal(c.auth, `Basic ${Buffer.from("moi:mdp").toString("base64")}`);
+  await call(svc("/v1"), { headers: { authorization: "Bearer {{KEY}}" } }).then((r) => r.text());
+  assert.equal(seen.auth, "Bearer s3cret-key");
+  await call(svc("/bot%7B%7BKEY%7D%7D/x")).then((r) => r.text());
+  assert.equal(seen.url, "/bots3cret-key/x");
+  await call(svc("/"), { method: "PROPFIND", headers: { authorization: "Basic {{basic:USER:PASS}}" } }).then((r) => r.text());
+  assert.equal(seen.auth, `Basic ${Buffer.from("moi:mdp").toString("base64")}`);
 });
 
 test("les marqueurs sont remplacés dans un corps JSON ou formulaire, échappés selon le format", async () => {
-  const json = await (await call(svc("/login"), { method: "POST", headers: { "content-type": "application/json" }, body: '{"username":"{{KEY}}","password":"{{LOGIN_PASS}}"}' })).json();
-  assert.deepEqual(JSON.parse(json.body), { username: "s3cret-key", password: 'a"b\\c&d=e' });
-  const form = await (await call(svc("/login"), { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "u={{KEY}}&p={{LOGIN_PASS}}" })).json();
-  assert.equal(new URLSearchParams(form.body).get("p"), 'a"b\\c&d=e');
-  const raw = await (await call(svc("/up"), { method: "POST", headers: { "content-type": "application/octet-stream", authorization: "Bearer {{KEY}}" }, body: "{{KEY}}" })).json();
-  assert.equal(raw.body, "{{KEY}}"); // binaire : jamais touché
+  await call(svc("/login"), { method: "POST", headers: { "content-type": "application/json" }, body: '{"username":"{{KEY}}","password":"{{LOGIN_PASS}}"}' }).then((r) => r.text());
+  assert.deepEqual(JSON.parse(seen.body), { username: "s3cret-key", password: 'a"b\\c&d=e' });
+  await call(svc("/login"), { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "u={{KEY}}&p={{LOGIN_PASS}}" }).then((r) => r.text());
+  assert.equal(new URLSearchParams(seen.body).get("p"), 'a"b\\c&d=e');
+  await call(svc("/up"), { method: "POST", headers: { "content-type": "application/octet-stream", authorization: "Bearer {{KEY}}" }, body: "{{KEY}}" }).then((r) => r.text());
+  assert.equal(seen.body, "{{KEY}}"); // binaire : jamais touché
+});
+
+test("un serveur qui renvoie ce qu'il reçoit ne fait pas sortir les secrets", async () => {
+  const res = await call(svc("/x/{{KEY}}"), { method: "POST", headers: { "content-type": "application/json" }, body: '{"p":"{{LOGIN_PASS}}"}' });
+  const basic = await (await call(svc("/b"), { headers: { authorization: "Basic {{basic:USER:PASS}}" } })).text();
+  const text = (await res.text()) + basic;
+  assert.equal(seen.url, "/b");
+  for (const leak of ["s3cret-key", "mdp", Buffer.from("moi:mdp").toString("base64"), 'a\\"b', encodeURIComponent('a"b\\c&d=e')]) {
+    assert.ok(!text.includes(leak), `fuite dans la réponse : ${leak}`);
+  }
+  assert.match(text, /\{\{KEY\}\}/);
+  assert.equal(res.headers.get("x-echo-url"), "/x/{{KEY}}");
 });
 
 test("un secret dans le corps obéit aux mêmes règles : serveurs et lecture seule", async () => {
@@ -326,8 +344,8 @@ test("un fichier mal formé : le coffre garde la version précédente et prévie
   writeFileSync(CONFIG, good.replace("vault:", "vault: [cassé"));
   await settle();
   assert.match(sent.at(-1), /ne peut pas relire \/home\/moi\/dots\/test\/test\.dot/);
-  const a = await (await call(svc("/v1"), { headers: { authorization: "Bearer {{KEY}}" } })).json();
-  assert.equal(a.auth, "Bearer s3cret-key", "les secrets marchent toujours");
+  await call(svc("/v1"), { headers: { authorization: "Bearer {{KEY}}" } }).then((r) => r.text());
+  assert.equal(seen.auth, "Bearer s3cret-key", "les secrets marchent toujours");
   writeFileSync(CONFIG, good);
   await settle();
 });
