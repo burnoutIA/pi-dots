@@ -496,8 +496,9 @@ export default function (pi: ExtensionAPI) {
         "1. Avant/après : relis ta mémoire. Pour chaque changement noté à ta revue précédente, regarde s'il a tenu ses promesses (moins de jetons, moins d'échecs, un retour positif). Sinon, reviens dessus.",
         `2. Échecs : lance \`doctor\` avec days=${REVIEW_DAYS}, puis regarde dans /dot/logs ce qui s'est mal passé (boucles, todos bloqués, runs en échec, refus du coffre). Corrige la cause : le skill, le script ou la méthode en question.`,
         "3. Retours de la personne : relis ce qu'elle t'a dit de ton travail (ta mémoire, ta conversation). Tiens-en compte.",
-        "4. Budget : lance `budget` show. Passe en `deferred` les outils lourds et peu utilisés, remets en `direct` ceux que tu as dû recharger souvent. Allège les skills trop longs, supprime ceux qui ne servent plus.",
-        "5. Note avec `remember` chaque changement, avec la mesure de départ (ex. « 24/10 : skill X allégé, 60k jetons par run avant »), pour pouvoir comparer à la prochaine revue.",
+        "4. Ta mémoire et tes consignes : reprends MEMORY.md fait par fait. Chacun est-il encore vrai ? Compare avec ton plan, tes livrables et ce que la personne a dit depuis. Retire (`forget`) ou remplace (`remember` avec `replaces`) ce qui est périmé, contredit, en double, ou qui contient la valeur d'un secret. Fais de même pour les fichiers de consignes que tu lis (AGENTS.md, tes skills) : une consigne qui renvoie à un fichier absent ou décrit une méthode abandonnée, corrige-la.",
+        "5. Budget : lance `budget` show. Passe en `deferred` les outils lourds et peu utilisés, remets en `direct` ceux que tu as dû recharger souvent. Allège les skills trop longs, supprime ceux qui ne servent plus.",
+        "6. Note avec `remember` chaque changement, avec la mesure de départ (ex. « 24/10 : skill X allégé, 60k jetons par run avant »), pour pouvoir comparer à la prochaine revue.",
         "Ne préviens la personne que si tu as changé quelque chose qui la concerne, ou si tu as besoin de son avis.",
       ].join("\n"),
     );
@@ -1005,11 +1006,16 @@ function registerTools(pi: ExtensionAPI) {
     promptSnippet: "remember: save a durable fact for all your future sessions",
     promptGuidelines: [
       "Use `remember` as soon as you learn something that will matter later: a decision or preference of the person, how one of their services works for you (which skill, which secret names, which server), what was abandoned and why.",
-      "Do not remember details of the current task, or things already in your memory. When a fact becomes wrong, `forget` it and remember the new one.",
+      "Do not remember details of the current task, or things already in your memory.",
+      "Before remembering, look at your memory: if the new fact updates or contradicts an existing one (a choice changed, a path was abandoned, a blocker was solved), pass `replaces` so the old one goes away. Never leave two versions side by side.",
+      "Never remember a secret's value, anything you learned about one, or a way around the vault.",
     ],
-    parameters: Type.Object({ fact: Type.String({ description: "One short sentence that stands on its own" }) }),
+    parameters: Type.Object({
+      fact: Type.String({ description: "One short sentence that stands on its own" }),
+      replaces: Type.Optional(Type.String({ description: "A passage of the existing fact this one replaces" })),
+    }),
     async execute(_id: string, args: any) {
-      const outcome = remember(MEMORY, String(args.fact ?? ""));
+      const outcome = remember(MEMORY, String(args.fact ?? ""), new Date(), String(args.replaces ?? ""));
       if (outcome.ok) log("memory.remember", { fact: String(args.fact).slice(0, 200) });
       return answer(outcome.message, !outcome.ok);
     },
@@ -1192,7 +1198,11 @@ function registerTools(pi: ExtensionAPI) {
       if (found === "unknown") return answer("Unknown action: use add, list, update, reached, pause, resume or drop.", true);
       if (!found) return answer(`No objective ${args.id}.`, true);
       log("plan.change", { tool: "objective", action: args.action, objective: found.id, status: found.status });
-      return answer(objectiveBlock(readPlan(), found));
+      const tidy =
+        args.action === "reached" || args.action === "drop"
+          ? "\n\nNow tidy your memory for this objective: read /dot/memory/MEMORY.md and, for every fact about it, `forget` what no longer holds (abandoned paths, solved blockers, pending requests) and `remember` with `replaces` what changed. Keep only what will help later."
+          : "";
+      return answer(objectiveBlock(readPlan(), found) + tidy);
     },
   });
 

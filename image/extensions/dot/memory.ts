@@ -19,12 +19,23 @@ export function readMemory(dir: string): string {
 const facts = (text: string) => text.split("\n").filter((l) => l.startsWith("- "));
 const normalize = (s: string) => s.toLowerCase().replace(/_\(.*?\)_/g, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
-export function remember(dir: string, fact: string, date = new Date()): { ok: boolean; message: string } {
+// replaces : un passage du fait que celui-ci remplace. Le nouveau prend sa place, au lieu de
+// s'ajouter à côté d'un fait devenu faux (deux versions qui se contredisent, la vieille gagnant parfois).
+export function remember(dir: string, fact: string, date = new Date(), replaces = ""): { ok: boolean; message: string } {
   const clean = fact.replace(/\s+/g, " ").trim();
   if (!clean) return { ok: false, message: "Empty fact." };
   const text = readMemory(dir);
-  if (facts(text).some((l) => normalize(l) === normalize(clean))) return { ok: true, message: "Already in memory." };
   const line = `- ${clean} _(${date.toLocaleDateString("fr-FR")})_`;
+  if (replaces.trim()) {
+    const needle = normalize(replaces);
+    const hits = facts(text).filter((l) => normalize(l).includes(needle));
+    if (hits.length !== 1) return { ok: false, message: hits.length ? `${hits.length} facts match \`replaces\`: be more precise.` : "No fact matches `replaces`: nothing was changed." };
+    const next = text.split("\n").map((l) => (l === hits[0] ? line : l)).join("\n");
+    if (next.length > MAX_CHARS) return { ok: false, message: `Memory is full (${MAX_CHARS} characters): forget outdated facts first.` };
+    writeFileSync(join(dir, "MEMORY.md"), next);
+    return { ok: true, message: `Replaced: ${hits[0].slice(2)}` };
+  }
+  if (facts(text).some((l) => normalize(l) === normalize(clean))) return { ok: true, message: "Already in memory." };
   const next = `${text.trimEnd()}\n${line}\n`;
   if (next.length > MAX_CHARS) return { ok: false, message: `Memory is full (${MAX_CHARS} characters): forget outdated facts first.` };
   writeFileSync(join(dir, "MEMORY.md"), next.startsWith("#") ? next : HEADER + next);

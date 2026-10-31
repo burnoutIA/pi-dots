@@ -75,6 +75,13 @@ test("mémoire : remember ajoute une fois, forget retire, la taille est bornée"
   assert.equal(forget(d, "passent par").ok, true);
   assert.doesNotMatch(readMemory(d), /iCloud/);
   assert.equal(remember(d, "x".repeat(9000)).ok, false);
+  // replaces : le nouveau fait prend la place de l'ancien, sans doublon
+  remember(d, "Les entreprises se cherchent sur pappers.fr.");
+  assert.match(remember(d, "Les entreprises se cherchent par l'API RNE de l'INPI.", new Date(), "pappers").message, /^Replaced/);
+  assert.doesNotMatch(readMemory(d), /pappers/);
+  assert.match(readMemory(d), /API RNE/);
+  assert.equal(remember(d, "autre", new Date(), "introuvable").ok, false);
+  assert.doesNotMatch(readMemory(d), /autre/);
 });
 
 test("skills : un SKILL.md sans en-tête name/description est signalé", async () => {
