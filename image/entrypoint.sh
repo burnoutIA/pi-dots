@@ -44,6 +44,11 @@ rm -f "$AGENT/telegram.lock"
 # Providers déclarés par l'utilisateur (endpoints compatibles, serveurs locaux…).
 if [ -f /opt/dot/config/models.json ]; then
   cp /opt/dot/config/models.json "$AGENT/models.json"
+  # Les autres modèles du serveur, pour pouvoir en changer ensuite (le défaut reste DOT_MODEL).
+  node /opt/dot/discover-models.mjs "$AGENT/models.json" 2>&1 | while read -r line; do
+    echo "$line"
+    dot_log "models.discover" "\"text\":$(printf '%s' "$line" | jq -Rs .)"
+  done || true
 fi
 
 # Réglages de pi : le modèle vient des variables, le reste de ce que pi a déjà écrit est gardé.

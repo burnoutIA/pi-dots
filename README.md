@@ -50,6 +50,7 @@ vault:
 
 - **Le dot ne voit jamais ce fichier.** Au démarrage, l'application en extrait seulement `env` et `model` pour lui. Seul le coffre lit le nœud `vault`, et il y ajoute les secrets que tu lui donnes **en gardant tes commentaires**.
 - **Garde-fou** : `./dot start` refuse un réglage de `env` qui ressemble à un secret (`…_API_KEY`, `…TOKEN`…), ainsi qu'une clé en clair dans `model`.
+- **Les modèles** : au démarrage, le dot demande à chaque provider compatible OpenAI la liste de ses modèles (`GET <baseUrl>/models`, par le coffre) et ajoute ceux qui ne sont pas déclarés. Le modèle par défaut reste `DOT_MODEL` ; les autres se choisissent ensuite (`/model`, ou le menu de l'application). Un modèle déclaré dans `models` garde son réglage. `discover: false` sur un provider garde sa liste telle quelle (utile chez un fournisseur qui liste des centaines de modèles).
 - **Le fichier contient tes secrets en clair** : il est créé lisible par toi seul. Garde-le comme un trousseau de clés.
 
 **Ouvrir un `.dot` d'un double-clic** : `./dot associer` (Linux), à faire une fois à l'installation, associe les fichiers `.dot` à l'application. Un double-clic **lance toujours le dot**, puis fait ce que dit `onclic` : `chat` ouvre la conversation dans un terminal, `none` ne fait rien de plus (une autre application, par exemple, prend la main).
