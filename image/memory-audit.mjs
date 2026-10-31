@@ -28,7 +28,8 @@ const SECRET_LIKE = [
   [/\b(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[a-z])(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]{24,}\b/, "une longue chaîne aléatoire"],
 ];
 
-export function auditMemory(text, plan = { objectives: [] }, now = new Date()) {
+// project : l'audit porte sur les notes de ce projet (pas de faits « propres à un projet » à déplacer).
+export function auditMemory(text, plan = { objectives: [] }, now = new Date(), project = null) {
   const facts = text.split("\n").filter((l) => l.startsWith("- "));
   const short = (l) => l.slice(2, 90).replace(/\s+/g, " ") + (l.length > 92 ? "…" : "");
 
@@ -44,6 +45,16 @@ export function auditMemory(text, plan = { objectives: [] }, now = new Date()) {
     const w = words(line);
     const o = closed.find((obj) => [...words(obj.title ?? "")].filter((x) => w.has(x)).length >= 2);
     if (o) aboutClosed.push({ fact: line, objective: o });
+  }
+
+  // Un fait de la mémoire globale qui ne parle que d'un projet ouvert : sa place est dans ses notes.
+  const open = project ? [] : (plan.objectives ?? []).filter((o) => o.status === "active" || o.status === "paused");
+  const projectSpecific = [];
+  for (const line of facts) {
+    if (aboutClosed.some((a) => a.fact === line)) continue;
+    const w = words(line);
+    const o = open.find((obj) => [...words(obj.title ?? "")].filter((x) => w.has(x)).length >= 2);
+    if (o) projectSpecific.push({ fact: line, objective: o });
   }
 
   // Quasi-doublons : beaucoup de mots en commun (indice de Jaccard).
@@ -71,10 +82,12 @@ export function auditMemory(text, plan = { objectives: [] }, now = new Date()) {
     aboutClosed,
     duplicates,
     secretLike,
+    projectSpecific,
     // Une ligne par constat, pour doctor.
     lines: [
       ...secretLike.map((s) => ["❌", "mémoire : valeur sensible ?", `${s.what} dans « ${short(s.fact)} » : un secret n'a rien à faire en mémoire`]),
       ...aboutClosed.map((a) => ["⚠️", "mémoire : objectif clos", `« ${short(a.fact)} » parle de « ${a.objective.title} » (${a.objective.status === "dropped" ? "abandonné" : "atteint"}) : encore utile ?`]),
+      ...projectSpecific.map((p) => ["⚠️", "mémoire : propre à un projet", `« ${short(p.fact)} » ne concerne que « ${p.objective.title} » : à déplacer dans ses notes (remember project: ${p.objective.id})`]),
       ...duplicates.map(([a, b]) => ["⚠️", "mémoire : doublon ?", `« ${short(a)} » / « ${short(b)} »`]),
       ...(stale.length ? [["⚠️", "mémoire : faits anciens", `${stale.length} noté(s) il y a plus de ${STALE_DAYS} jours : à revérifier, ou à demander à la personne`]] : []),
     ],

@@ -24,11 +24,11 @@ import { join, relative } from "node:path";
 import { Type } from "typebox";
 import { describeCall, render as renderLive, writeLive } from "./live.ts";
 import { log, pruneLogs } from "./log.ts";
-import { forget, readMemory, remember, skillProblems } from "./memory.ts";
+import { PROJECTS_DIR, forget, readMemory, remember, skillProblems } from "./memory.ts";
 import { type Exposure, PROTECTED, applyToMcp, declaredTokens, readLoadout, readUsage, record, setExposure, usageFile, uses } from "./usage.ts";
 import { modelUnavailable, retryMinutes } from "./outage.ts";
 import { type Schedule, nextAfter } from "./schedule.ts";
-import { MEMORY, OPEN, type Plan, type Todo, type Work, newId, nextWork, now, objectiveBlock, readPlan, todoLine, updatePlan } from "./plan.ts";
+import { MEMORY, OPEN, type Plan, STAGES, STAGE_LABEL, type Stage, type Todo, type Work, board, newId, nextWork, now, objectiveBlock, readPlan, stageOf, todoLine, updatePlan } from "./plan.ts";
 
 const HOME = process.env.DOT_HOME ?? "/dot";
 const WORKSPACE = join(HOME, "workspace");
@@ -60,6 +60,7 @@ interface State {
   backoffUntil?: string;
   modelDown?: { since: string; tries: number; error: string }; // le modèle ne répond plus
   nextReview?: string; // prochaine revue de budget
+  projectsMigrated?: boolean; // la mémoire a été répartie en notes par projet
 }
 interface Watch { id: string; command: string; every: number; prompt: string; paused?: boolean; hash?: string; output?: string; nextCheck: string }
 
@@ -194,7 +195,8 @@ function todoPrompt(plan: Plan, work: Extract<Work, { kind: "todo" }>): string {
     "- fini : `todo` done, avec le résultat ;",
     "- il te faut la personne (une information, une décision, un accès) : pose ta question avec `notify`, puis `todo` wait ;",
     "- il faut d'autres étapes : ajoute-les avec `todo` add.",
-    "Si tu as appris quelque chose de durable (comment marche un service, une décision de la personne), note-le avec `remember`.",
+    `Avant de finir, tiens le projet à jour : dans ses notes (\`remember\` avec project: ${objective.id}, et \`replaces\` pour ce qui a changé), ce que tu as décidé, appris ou trouvé et qui servira aux prochains runs ; sur sa carte (\`objective\` update), la suite et ce qui bloque. Retire des notes ce qui n'est plus vrai.`,
+    "Une leçon qui sert au-delà de ce projet (comment marche un service, une préférence de la personne) va dans ta mémoire globale (`remember` sans project).",
     "Ta réponse finale est un compte-rendu de deux ou trois lignes.",
   ].join("\n");
 }
@@ -208,7 +210,8 @@ function planPrompt(plan: Plan, work: Extract<Work, { kind: "plan" }>): string {
     objectiveBlock(plan, objective),
     "",
     "Décide :",
-    "- s'il est atteint : `objective` reached, avec le résultat ; note avec `remember` ce qui servira plus tard (comment c'est fait, ce que la personne a décidé), et demande-lui son avis en une question courte dans ton `notify` (« c'est utile ? quelque chose à changer ? ») ;",
+    "- si le résultat est livré mais que la personne ne l'a pas encore validé : `objective` stage a_valider, avec en blocker ce qu'elle doit regarder, et demande-lui son avis en une question courte dans ton `notify` ;",
+    "- s'il est atteint et validé : `objective` reached, avec le résultat ;",
     "- sinon : fais le plan des prochaines étapes avec `todo` add (petites, concrètes, vérifiables). Ne les exécute pas maintenant ;",
     "- si rien n'est possible pour l'instant : ne change rien et explique pourquoi en une ligne.",
   ].join("\n");
@@ -237,7 +240,7 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
     const extensions = (process.env.DOT_PI_EXTENSIONS ?? "").trim().split(/\s+/).filter(Boolean);
     const child = spawn("pi", [...extensions, "-p", "--mode", "json", "--session-id", info.session, "--", prompt], {
       cwd: WORKSPACE,
-      env: { ...process.env, DOT_ROLE: "worker" },
+      env: { ...process.env, DOT_ROLE: "worker", DOT_OBJECTIVE: info.objective ?? "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let text = "";
@@ -329,7 +332,14 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
 
 // --- Rappel des fichiers persistants dans le prompt système ---------------------------------------
 
-function memorySection(): string {
+// L'id de projet donné à remember/forget : undefined (mémoire globale), l'id s'il existe, null sinon.
+function projectOf(id: unknown): string | undefined | null {
+  const text = String(id ?? "").trim();
+  if (!text) return undefined;
+  return readPlan().objectives.some((o) => o.id === text) ? text : null;
+}
+
+function memorySection(objectiveId = ""): string {
   const read = (name: string) => {
     try {
       return readFileSync(join(MEMORY, name), "utf8").trim();
@@ -338,11 +348,14 @@ function memorySection(): string {
     }
   };
   const plan = readPlan();
-  const open = plan.objectives.filter((o) => o.status === "active" || o.status === "paused");
-  const journal = read("JOURNAL.md").split("\n").slice(-25).join("\n");
+  const journal = read("JOURNAL.md").split("\n").filter(Boolean).slice(-8).join("\n");
+  const project = plan.objectives.find((o) => o.id === objectiveId);
   return [
-    `## MEMORY.md\n${readMemory(MEMORY).trim()}`,
-    `## Objectifs en cours\n${open.length ? open.map((o) => objectiveBlock(plan, o, false)).join("\n\n") : "Aucun."}`,
+    `## MEMORY.md (mémoire globale)\n${readMemory(MEMORY).trim()}`,
+    `## Tableau des projets\n${board(plan)}`,
+    ...(project
+      ? [`## Ce projet\n${objectiveBlock(plan, project, false)}`, `## Notes du projet ${project.id}\n${readMemory(MEMORY, project.id).trim()}`]
+      : ["Les notes de chaque projet ne sont pas chargées : ouvre celles d'un projet (`objective` show) dès que la personne en parle."]),
     `## JOURNAL.md (fin)\n${journal}`,
   ].join("\n\n");
 }
@@ -364,7 +377,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event: any, context: any) => {
     mkdirSync(MEMORY, { recursive: true });
     if (!existsSync(usageFile(MEMORY))) seedUsage();
-    atStart = memorySection();
+    atStart = memorySection(WORKER ? process.env.DOT_OBJECTIVE ?? "" : "");
     lastCtx = context;
     budgetNote = ""; // calculée au premier appel, quand les outils MCP sont connectés
     brokenSkills = skillProblems(join(process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent"), "skills"));
@@ -375,7 +388,7 @@ export default function (pi: ExtensionAPI) {
       ...(event.systemPromptOptions.sections ?? {}),
       dot_role: WORKER
         ? "This is a work run: you were started on your own, on one precise job (described in the message). Nobody reads this run live. Do the job, keep the plan up to date with `todo` / `objective`, use `notify` only for what the person must know, and finish with a short report."
-        : "This is your conversation with the person. Your work on objectives runs separately (one session per objective); its reports reach this conversation as `[dot:compte-rendu]` messages. To start some work, create an objective or todos: the work runs will take them up.",
+        : "This is your conversation with the person. You start with the global view (your board of projects); each project's notes are loaded only when needed: as soon as the person talks about a project, open its notes with `objective` show before answering. Your work on objectives runs separately (one session per objective); its reports reach this conversation as `[dot:compte-rendu]` messages. To start some work, create an objective or todos: the work runs will take them up.",
       dot_memory: `Your persistent state, as it was when this session started (read /dot/memory again for the current version):\n\n${atStart}`,
       dot_budget: (budgetNote ||= budgetSection(pi, lastCtx)),
       ...(brokenSkills.length
@@ -496,9 +509,10 @@ export default function (pi: ExtensionAPI) {
         "1. Avant/après : relis ta mémoire. Pour chaque changement noté à ta revue précédente, regarde s'il a tenu ses promesses (moins de jetons, moins d'échecs, un retour positif). Sinon, reviens dessus.",
         `2. Échecs : lance \`doctor\` avec days=${REVIEW_DAYS}, puis regarde dans /dot/logs ce qui s'est mal passé (boucles, todos bloqués, runs en échec, refus du coffre). Corrige la cause : le skill, le script ou la méthode en question.`,
         "3. Retours de la personne : relis ce qu'elle t'a dit de ton travail (ta mémoire, ta conversation). Tiens-en compte.",
-        "4. Ta mémoire et tes consignes : pars des lignes « mémoire » de `doctor` (faits anciens, liés à un objectif clos, doublons, valeur sensible), puis reprends MEMORY.md fait par fait. Chacun est-il encore vrai ? Compare avec ton plan, tes livrables et ce que la personne a dit depuis. Retire (`forget`) ou remplace (`remember` avec `replaces`) ce qui est périmé, contredit, en double, ou qui contient la valeur d'un secret. Fais de même pour les fichiers de consignes que tu lis (AGENTS.md, tes skills) : une consigne qui renvoie à un fichier absent ou décrit une méthode abandonnée, corrige-la. Pour un fait dont tu n'es pas sûr qu'il tienne encore, ne le supprime pas au hasard : pose la question à la personne (un seul `notify` qui regroupe tes doutes).",
-        "5. Budget : lance `budget` show. Passe en `deferred` les outils lourds et peu utilisés, remets en `direct` ceux que tu as dû recharger souvent. Allège les skills trop longs, supprime ceux qui ne servent plus.",
-        "6. Note avec `remember` chaque changement, avec la mesure de départ (ex. « 24/10 : skill X allégé, 60k jetons par run avant »), pour pouvoir comparer à la prochaine revue.",
+        "4. Ta mémoire et tes consignes : pars des lignes « mémoire » et « notes » de `doctor` (faits anciens, liés à un objectif clos, doublons, valeur sensible), puis reprends MEMORY.md fait par fait. Chacun est-il encore vrai ? Compare avec ton plan, tes livrables et ce que la personne a dit depuis. Retire (`forget`) ou remplace (`remember` avec `replaces`) ce qui est périmé, contredit, en double, ou qui contient la valeur d'un secret. Fais de même pour les fichiers de consignes que tu lis (AGENTS.md, tes skills) : une consigne qui renvoie à un fichier absent ou décrit une méthode abandonnée, corrige-la. Pour un fait dont tu n'es pas sûr qu'il tienne encore, ne le supprime pas au hasard : pose la question à la personne (un seul `notify` qui regroupe tes doutes).",
+        "5. Ton tableau : chaque projet est-il à la bonne étape, avec sa suite et ce qui bloque ? Un projet « À valider » qui attend la personne depuis plus de 3 jours : relance-la une seule fois (`notify` qui regroupe ces projets, puis `objective` update nudged), puis laisse-le en attente sans insister. Une idée oubliée depuis longtemps : demande-lui si elle tient toujours.",
+        "6. Budget : lance `budget` show. Passe en `deferred` les outils lourds et peu utilisés, remets en `direct` ceux que tu as dû recharger souvent. Allège les skills trop longs, supprime ceux qui ne servent plus.",
+        "7. Note avec `remember` chaque changement, avec la mesure de départ (ex. « 24/10 : skill X allégé, 60k jetons par run avant »), pour pouvoir comparer à la prochaine revue.",
         "Ne préviens la personne que si tu as changé quelque chose qui la concerne, ou si tu as besoin de son avis.",
       ].join("\n"),
     );
@@ -643,6 +657,26 @@ export default function (pi: ExtensionAPI) {
     report(label, result.text);
   }
 
+  // Une fois : un dot d'avant les notes par projet répartit sa mémoire globale.
+  function dueProjectsMigration() {
+    const state = loadState();
+    if (state.projectsMigrated) return;
+    changeState((s) => (s.projectsMigrated = true));
+    const plan = readPlan();
+    if (existsSync(join(MEMORY, PROJECTS_DIR)) || !plan.objectives.length) return;
+    enqueue(
+      "revue",
+      [
+        `[dot:revue] ${stamp()}`,
+        "Ta mémoire change d'organisation : une mémoire globale courte, et des notes par projet (un projet = un objectif), chargées seulement quand tu travailles dessus ou que la personne en parle.",
+        "1. Lis /dot/memory/MEMORY.md et ton tableau (`objective` list).",
+        "2. Chaque fait propre à un seul projet : recopie-le dans les notes de ce projet (`remember` avec project), en plus court si possible, puis retire-le de la mémoire globale (`forget`). Ne garde au global que la personne, ses règles et préférences, et les savoir-faire qui servent à plusieurs projets.",
+        "3. Range chaque projet ouvert à sa vraie étape (`objective` stage : idee, cadrage, en_cours, a_valider, livre) et renseigne sa suite et ce qui le bloque (`objective` update next, blocker). Corrige un titre qui ne correspond plus au projet.",
+        "4. Ne préviens la personne que si tu as un doute sur un projet : regroupe tes questions en un seul `notify`.",
+      ].join("\n"),
+    );
+  }
+
   function tick() {
     const at = new Date();
     changeState((s) => (s.lastAlive = at.toISOString()));
@@ -650,6 +684,7 @@ export default function (pi: ExtensionAPI) {
     dueWatches(at);
     inbox();
     dueReview(at);
+    dueProjectsMigration();
     watchResources();
 
     const state = loadState();
@@ -1001,11 +1036,11 @@ function registerTools(pi: ExtensionAPI) {
     name: "remember",
     label: "remember",
     description:
-      "Save one durable fact to your memory (/dot/memory/MEMORY.md), which every future session reads at start: the conversation and all your work runs. " +
-      "This is the only way what you learn in one session reaches the others. One short sentence, self-contained, in the person's language.",
+      "Save one durable fact. Without `project`: your global memory (/dot/memory/MEMORY.md), read at the start of every session — keep it for the person, their rules and preferences, and know-how shared by several projects. " +
+      "With `project` (an objective id): the notes of that project (/dot/memory/projets/<id>.md), read in its work runs and when you open it with `objective` show — decisions, method, sources, pitfalls. One short sentence, self-contained, in the person's language.",
     promptSnippet: "remember: save a durable fact for all your future sessions",
     promptGuidelines: [
-      "Use `remember` as soon as you learn something that will matter later: a decision or preference of the person, how one of their services works for you (which skill, which secret names, which server), what was abandoned and why.",
+      "Use `remember` as soon as you learn something that will matter later, in a run or during a conversation: a decision of the person, how something works, what was abandoned and why. Anything about one project goes into that project's notes.",
       "Do not remember details of the current task, or things already in your memory.",
       "Before remembering, look at your memory: if the new fact updates or contradicts an existing one (a choice changed, a path was abandoned, a blocker was solved), pass `replaces` so the old one goes away. Never leave two versions side by side.",
       "Never remember a secret's value, anything you learned about one, or a way around the vault.",
@@ -1013,10 +1048,13 @@ function registerTools(pi: ExtensionAPI) {
     parameters: Type.Object({
       fact: Type.String({ description: "One short sentence that stands on its own" }),
       replaces: Type.Optional(Type.String({ description: "A passage of the existing fact this one replaces" })),
+      project: Type.Optional(Type.String({ description: "Objective id: save into that project's notes instead of the global memory" })),
     }),
     async execute(_id: string, args: any) {
-      const outcome = remember(MEMORY, String(args.fact ?? ""), new Date(), String(args.replaces ?? ""));
-      if (outcome.ok) log("memory.remember", { fact: String(args.fact).slice(0, 200) });
+      const project = projectOf(args.project);
+      if (project === null) return answer(`No objective ${args.project}: give an existing objective id, or no project for the global memory.`, true);
+      const outcome = remember(MEMORY, String(args.fact ?? ""), new Date(), String(args.replaces ?? ""), project);
+      if (outcome.ok) log("memory.remember", { project, fact: String(args.fact).slice(0, 200) });
       return answer(outcome.message, !outcome.ok);
     },
   });
@@ -1024,12 +1062,17 @@ function registerTools(pi: ExtensionAPI) {
   reg({
     name: "forget",
     label: "forget",
-    description: "Remove one outdated or wrong fact from your memory. `match` is a passage of that fact.",
-    promptSnippet: "forget: remove an outdated fact from your memory",
-    parameters: Type.Object({ match: Type.String({ description: "A passage of the fact to remove, precise enough to single it out" }) }),
+    description: "Remove one outdated or wrong fact from your global memory, or from a project's notes with `project`. `match` is a passage of that fact.",
+    promptSnippet: "forget: remove an outdated fact from your memory or a project's notes",
+    parameters: Type.Object({
+      match: Type.String({ description: "A passage of the fact to remove, precise enough to single it out" }),
+      project: Type.Optional(Type.String({ description: "Objective id: remove from that project's notes" })),
+    }),
     async execute(_id: string, args: any) {
-      const outcome = forget(MEMORY, String(args.match ?? ""));
-      if (outcome.ok) log("memory.forget", { match: String(args.match).slice(0, 200) });
+      const project = projectOf(args.project);
+      if (project === null) return answer(`No objective ${args.project}.`, true);
+      const outcome = forget(MEMORY, String(args.match ?? ""), project);
+      if (outcome.ok) log("memory.forget", { project, match: String(args.match).slice(0, 200) });
       return answer(outcome.message, !outcome.ok);
     },
   });
@@ -1137,15 +1180,20 @@ function registerTools(pi: ExtensionAPI) {
     name: "objective",
     label: "objective",
     description:
-      "Manage your objectives: the lasting things you work towards, on your own, across restarts. Each active objective is worked on through its todos; when it has no open todo left, you are asked to check whether it is reached or to plan the next todos. " +
-      "action: `add` (title, detail), `list`, `update` (id, title and/or detail), `reached` (id, result), `pause` / `resume` (id), `drop` (id, reason).",
-    promptSnippet: "objective: add, update, close or list your lasting objectives",
+      "Manage your objectives — your projects, on a board from idea to delivery: idee (noted, not started: no work runs) → cadrage (clarifying the need) → en_cours (todos running) → a_valider (delivered, waiting for the person's feedback: no new planning) → livre. Each card also has `next` (the next step) and `blocker` (what blocks it, and who must act). " +
+      "action: `add` (title, detail, stage), `board` (the global view), `show` (id: the full card, its todos and its notes — open it as soon as the person talks about a project), `list` (all, closed included), `update` (id; title, detail, next, blocker — empty string clears; nudged: true when you have reminded the person), `stage` (id, stage), `reached` (id, result), `pause` / `resume` (id), `drop` (id, reason).",
+    promptSnippet: "objective: your board of projects — add, show (card + notes), move between stages, update next step and blocker, close",
     promptGuidelines: [
       "Create an objective with `objective` when the person asks for something that takes more than one step or must be followed over time; then plan its first todos with `todo` add.",
-      "An objective is reached only when its result can be checked; mark it `reached` with that result.",
+      "An objective is reached only when its result can be checked and the person has validated it; until then it is `a_valider`.",
+      "Keep each card true: whenever the next step or a blocker changes, `objective` update it.",
     ],
     parameters: Type.Object({
-      action: Type.String({ description: "add | list | update | reached | pause | resume | drop" }),
+      action: Type.String({ description: "add | board | show | list | update | stage | reached | pause | resume | drop" }),
+      stage: Type.Optional(Type.String({ description: "idee | cadrage | en_cours | a_valider | livre" })),
+      next: Type.Optional(Type.String({ description: "With `update`: the next step, one line" })),
+      blocker: Type.Optional(Type.String({ description: "With `update`: what blocks it and who must act, one line" })),
+      nudged: Type.Optional(Type.Boolean({ description: "With `update`: you have just reminded the person about it" })),
       id: Type.Optional(Type.String()),
       title: Type.Optional(Type.String({ description: "Short title of the objective" })),
       detail: Type.Optional(Type.String({ description: "What success looks like, constraints, context" })),
@@ -1154,6 +1202,13 @@ function registerTools(pi: ExtensionAPI) {
     }),
     async execute(_id: string, args: any) {
       const plan = readPlan();
+      if (args.stage !== undefined && !STAGES.includes(args.stage)) return answer(`Unknown stage: use ${STAGES.join(", ")}.`, true);
+      if (args.action === "board") return answer(board(plan));
+      if (args.action === "show") {
+        const o = plan.objectives.find((x) => x.id === args.id);
+        if (!o) return answer(`No objective ${args.id}.`, true);
+        return answer(`${objectiveBlock(plan, o)}\n\n${readMemory(MEMORY, o.id).trim()}`);
+      }
       if (args.action === "list") {
         return answer(plan.objectives.length ? plan.objectives.map((o) => objectiveBlock(plan, o, o.status === "active" || o.status === "paused")).join("\n\n") : "No objective.");
       }
@@ -1161,9 +1216,10 @@ function registerTools(pi: ExtensionAPI) {
         const title = String(args.title ?? "").trim();
         if (!title) return answer("`add` needs a title.", true);
         const id = newId();
-        updatePlan((p) => p.objectives.push({ id, title, detail: args.detail?.trim() || undefined, status: "active", created: now(), updated: now() }));
+        const stage: Stage = args.stage ?? "en_cours";
+        updatePlan((p) => p.objectives.push({ id, title, detail: args.detail?.trim() || undefined, status: "active", stage, created: now(), updated: now() }));
         log("plan.change", { tool: "objective", action: "add", objective: id, title });
-        return answer(`Objective ${id} added. Plan its first todos with \`todo\` add (objective: ${id}).`);
+        return answer(stage === "idee" ? `Idea ${id} noted on the board: nothing runs until you move it to cadrage or en_cours.` : `Objective ${id} added (${STAGE_LABEL[stage]}). Plan its first todos with \`todo\` add (objective: ${id}), and keep what matters in its notes (\`remember\` project: ${id}).`);
       }
       const found = updatePlan((p) => {
         const o = p.objectives.find((x) => x.id === args.id);
@@ -1172,9 +1228,19 @@ function registerTools(pi: ExtensionAPI) {
           case "update":
             if (args.title) o.title = String(args.title).trim();
             if (args.detail !== undefined) o.detail = String(args.detail).trim() || undefined;
+            if (args.next !== undefined) o.next = String(args.next).trim() || undefined;
+            if (args.blocker !== undefined) o.blocker = String(args.blocker).trim() || undefined;
+            if (args.nudged) o.nudged = now();
+            break;
+          case "stage":
+            if (!args.stage) return "unknown";
+            if (args.stage !== stageOf(o)) delete o.nudged; // une nouvelle attente, une nouvelle relance possible
+            o.stage = args.stage;
+            if (o.stage === "livre") o.status = "reached";
             break;
           case "reached":
             o.status = "reached";
+            o.stage = "livre";
             o.result = String(args.result ?? "").trim() || undefined;
             break;
           case "pause":
@@ -1195,12 +1261,12 @@ function registerTools(pi: ExtensionAPI) {
         delete o.idleUntil; // un objectif modifié mérite d'être réexaminé
         return o;
       });
-      if (found === "unknown") return answer("Unknown action: use add, list, update, reached, pause, resume or drop.", true);
+      if (found === "unknown") return answer("Unknown action (or `stage` without a stage): use add, board, show, list, update, stage, reached, pause, resume or drop.", true);
       if (!found) return answer(`No objective ${args.id}.`, true);
       log("plan.change", { tool: "objective", action: args.action, objective: found.id, status: found.status });
       const tidy =
-        args.action === "reached" || args.action === "drop"
-          ? "\n\nNow tidy your memory for this objective: read /dot/memory/MEMORY.md and, for every fact about it, `forget` what no longer holds (abandoned paths, solved blockers, pending requests) and `remember` with `replaces` what changed. Keep only what will help later."
+        args.action === "reached" || args.action === "drop" || (args.action === "stage" && args.stage === "livre")
+          ? `\n\nThis project is closed: its notes (projets/${found.id}.md) will no longer be loaded. Move into your global memory (\`remember\` without project) only the lessons that will help other projects, then check that your global memory holds nothing else about this one.`
           : "";
       return answer(objectiveBlock(readPlan(), found) + tidy);
     },

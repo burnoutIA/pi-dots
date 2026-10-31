@@ -112,7 +112,28 @@ memorySize > 7000 ? warn("mémoire presque pleine", `${memorySize} caractères`)
 if (memorySize) {
   const audit = auditMemory(readFileSync(join(MEMORY, "MEMORY.md"), "utf8"), plan);
   results.push(...audit.lines);
-  if (!audit.lines.length) ok("mémoire à jour", "aucun fait suspect (ancien, objectif clos, doublon, valeur sensible)");
+  if (!audit.lines.length) ok("mémoire à jour", "aucun fait suspect (ancien, objectif clos, propre à un projet, doublon, valeur sensible)");
+}
+// Les notes par projet : sensibles, en double, trop longues ; et celles d'un projet clos ou disparu.
+const projectsDir = join(MEMORY, "projets");
+if (existsSync(projectsDir)) {
+  const PROJECT_MAX = Number(process.env.DOT_PROJECT_MEMORY_CHARS ?? 3000);
+  const notes = readdirSync(projectsDir).filter((f) => f.endsWith(".md"));
+  let issues = 0;
+  for (const file of notes) {
+    const id = file.slice(0, -3);
+    const o = plan.objectives.find((x) => x.id === id);
+    const text = readFileSync(join(projectsDir, file), "utf8");
+    const label = o ? `notes « ${o.title.slice(0, 40)} »` : `notes ${id}`;
+    const audit = auditMemory(text, { objectives: [] }, new Date(), id);
+    for (const [icon, what, detail] of audit.lines) {
+      issues += 1;
+      results.push([icon, what.replace("mémoire", label), detail]);
+    }
+    if (text.length > PROJECT_MAX * 0.9) (issues += 1), warn(`${label} presque pleines`, `${text.length} / ${PROJECT_MAX} caractères : resserre-les`);
+    if (!o) (issues += 1), warn(`${label} : projet inconnu`, "aucun objectif ne porte cet id");
+  }
+  if (!issues) ok("notes des projets", `${notes.length} projet(s), rien à signaler`);
 }
 
 // --- Ressources ---

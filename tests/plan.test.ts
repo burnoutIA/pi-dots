@@ -32,6 +32,32 @@ test("un objectif sans todo ouvert demande un nouveau plan, sauf s'il est en att
   assert.equal(plan.nextWork({ objectives: [objective("a", { idleUntil: later })], todos: [] }), null);
 });
 
+test("tableau : une idée ne lance rien, un projet à valider fait ses todos sans replanifier", () => {
+  assert.equal(plan.nextWork({ objectives: [objective("a", { stage: "idee" })], todos: [todo("t", "a", "todo")] }), null);
+  assert.equal(plan.nextWork({ objectives: [objective("a", { stage: "a_valider" })], todos: [] }), null);
+  assert.equal(plan.nextWork({ objectives: [objective("a", { stage: "a_valider" })], todos: [todo("t", "a", "todo")] }).todo.id, "t");
+  assert.equal(plan.stageOf(objective("a")), "en_cours", "un objectif d'avant le tableau est en cours");
+  assert.equal(plan.stageOf(objective("a", { status: "reached" })), "livre");
+});
+
+test("tableau : une carte par projet ouvert, avec la suite, le blocage et l'inactivité", () => {
+  const at = new Date("2026-10-31T12:00:00Z");
+  const p = {
+    objectives: [
+      objective("u", { title: "Outil URSSAF", stage: "a_valider", next: "corriger les 4 lignes", blocker: "avis de la personne", updated: "2026-10-26T10:00:00Z" }),
+      objective("i", { title: "Veille jurisprudence", stage: "idee", updated: "2026-10-31T09:00:00Z" }),
+      objective("x", { title: "Pappers", status: "dropped", updated: "2026-10-25T10:00:00Z" }),
+    ],
+    todos: [todo("t1", "u", "done", { updated: "2026-10-26T10:00:00Z" }), todo("t2", "u", "todo", { updated: "2026-10-26T10:00:00Z" })],
+  };
+  const b = plan.board(p, at);
+  const lines = b.split("\n");
+  assert.match(lines[0], /^- \[Idée\] Veille jurisprudence .*actif aujourd'hui/, "les cartes suivent l'ordre des étapes");
+  assert.match(lines[1], /\[À valider\] Outil URSSAF \(u\) · todos 1\/2 · suite : corriger les 4 lignes · bloque : avis de la personne · inactif depuis 5 j/);
+  assert.match(b, /1 abandonné/);
+  assert.doesNotMatch(b, /Pappers/);
+});
+
 test("des todos qui attendent la personne ne déclenchent rien", () => {
   assert.equal(plan.nextWork({ objectives: [objective("a")], todos: [todo("t1", "a", "waiting")] }), null);
 });
@@ -84,6 +110,19 @@ test("mémoire : remember ajoute une fois, forget retire, la taille est bornée"
   assert.doesNotMatch(readMemory(d), /autre/);
 });
 
+test("notes de projet : séparées de la mémoire globale, plafonnées", async () => {
+  const { remember, forget, readMemory } = await import(`${src}/extensions/dot/memory.ts`);
+  const { mkdtempSync } = await import("node:fs");
+  const d = mkdtempSync(join(tmpdir(), "dot-proj-"));
+  assert.equal(remember(d, "La personne veut des rapports courts.").ok, true);
+  assert.match(remember(d, "Les dates viennent de l'API RNE.", new Date(), "", "abc123").message, /project abc123/);
+  assert.doesNotMatch(readMemory(d), /RNE/, "rien du projet dans la mémoire globale");
+  assert.match(readMemory(d, "abc123"), /^# Notes du projet abc123[\s\S]*API RNE/);
+  assert.match(remember(d, "Les dates viennent du BODACC.", new Date(), "API RNE", "abc123").message, /^Replaced/);
+  assert.equal(forget(d, "BODACC", "abc123").ok, true);
+  assert.equal(remember(d, "x".repeat(3500), new Date(), "", "abc123").ok, false);
+});
+
 test("audit de la mémoire : anciens, objectif clos, doublons, valeurs sensibles", async () => {
   const { auditMemory } = await import(`${src}/memory-audit.mjs`);
   const memory = [
@@ -102,6 +141,16 @@ test("audit de la mémoire : anciens, objectif clos, doublons, valeurs sensibles
   assert.match(a.aboutClosed[0].fact, /pappers/);
   assert.equal(a.duplicates.length, 1);
   assert.match(a.stale[0], /préfère/);
+});
+
+test("audit : un fait global qui ne concerne qu'un projet ouvert est à déplacer", async () => {
+  const { auditMemory } = await import(`${src}/memory-audit.mjs`);
+  const memory = "# Mémoire\n- Le CSV URSSAF des congés payés a 185 lignes _(26/10/2026)_\n- La personne préfère le tutoiement _(26/10/2026)_";
+  const p = { objectives: [{ id: "u", title: "Contrôle URSSAF des congés payés", status: "active" }] };
+  const a = auditMemory(memory, p, new Date(2026, 9, 31));
+  assert.equal(a.projectSpecific.length, 1);
+  assert.match(a.projectSpecific[0].fact, /CSV/);
+  assert.equal(auditMemory(memory, p, new Date(2026, 9, 31), "u").projectSpecific.length, 0, "dans les notes du projet, c'est leur place");
 });
 
 test("skills : un SKILL.md sans en-tête name/description est signalé", async () => {
