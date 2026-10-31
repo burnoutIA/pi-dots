@@ -84,6 +84,26 @@ test("mémoire : remember ajoute une fois, forget retire, la taille est bornée"
   assert.doesNotMatch(readMemory(d), /autre/);
 });
 
+test("audit de la mémoire : anciens, objectif clos, doublons, valeurs sensibles", async () => {
+  const { auditMemory } = await import(`${src}/memory-audit.mjs`);
+  const memory = [
+    "# Mémoire",
+    "- Les dates des dirigeants viennent de pappers.fr, section Dirigeants _(25/10/2026)_",
+    "- Le login INPI_USER est moi@example.com _(25/10/2026)_",
+    "- La personne préfère les rapports courts en français _(01/01/2026)_",
+    "- La personne préfère des rapports courts, rédigés en français _(20/10/2026)_",
+    "- CSV livré dans /dot/livrables/URSSAF-2025_direction-parts_2026-10-26.csv _(26/10/2026)_",
+    "- Les secrets passent par {{MODEL_KEY}} _(26/10/2026)_",
+  ].join("\n");
+  const plan = { objectives: [{ id: "a", title: "Scraper pappers.fr pour les dirigeants", status: "dropped" }] };
+  const a = auditMemory(memory, plan, new Date(2026, 9, 31));
+  assert.equal(a.facts, 6);
+  assert.deepEqual(a.secretLike.map((s) => s.what), ["une adresse e-mail"]);
+  assert.match(a.aboutClosed[0].fact, /pappers/);
+  assert.equal(a.duplicates.length, 1);
+  assert.match(a.stale[0], /préfère/);
+});
+
 test("skills : un SKILL.md sans en-tête name/description est signalé", async () => {
   const { skillProblems } = await import(`${src}/extensions/dot/memory.ts`);
   const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");

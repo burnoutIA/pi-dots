@@ -4,6 +4,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync, statfsSync } from "node:fs";
 import { join } from "node:path";
+import { auditMemory } from "./memory-audit.mjs";
 
 const HOME = process.env.DOT_HOME ?? "/dot";
 const AGENT = process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent");
@@ -108,6 +109,11 @@ if (existsSync(skillsDir)) {
 const memorySize = existsSync(join(MEMORY, "MEMORY.md")) ? statSync(join(MEMORY, "MEMORY.md")).size : 0;
 const facts = existsSync(join(MEMORY, "MEMORY.md")) ? readFileSync(join(MEMORY, "MEMORY.md"), "utf8").split("\n").filter((l) => l.startsWith("- ")).length : 0;
 memorySize > 7000 ? warn("mémoire presque pleine", `${memorySize} caractères`) : ok("mémoire", `${facts} fait(s) retenu(s)`);
+if (memorySize) {
+  const audit = auditMemory(readFileSync(join(MEMORY, "MEMORY.md"), "utf8"), plan);
+  results.push(...audit.lines);
+  if (!audit.lines.length) ok("mémoire à jour", "aucun fait suspect (ancien, objectif clos, doublon, valeur sensible)");
+}
 
 // --- Ressources ---
 const read = (f) => {
