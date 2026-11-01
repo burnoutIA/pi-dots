@@ -98,7 +98,7 @@ env:
   DOT_THINKING: medium
   DOT_INTERFACE: tui          # tui (terminal, dot attach) ou rpc (socket, dot rpc)
   TELEGRAM_OWNER_ID: ""       # ton identifiant Telegram ; vide : pas de Telegram
-  DOT_RECHECK_MINUTES: 60
+  DOT_AUTONOMY: prudent       # prudent : seul, il propose objectifs, tâches et veilles ; libre : il les crée
   DOT_RUN_MINUTES: 30
   DOT_MAX_RUNS: 3
   DOT_MEMORY: 8g
