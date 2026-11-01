@@ -19,6 +19,7 @@
 #
 # Pour un dot (./dot @nom …, ./dot chemin/du/dossier-ou-fichier.dot …, ou le dot par défaut) :
 #   start / stop / open     allumer / éteindre / allumer puis faire ce que dit « onclic » (double-clic)
+#   restart / reload        redémarrer / reconstruire l'image puis redémarrer (après une modification du code)
 #   chat, ask "…", send fichier, livrables, secret, suivre, rpc, attach, shell
 #   doctor, journal, status [--json], logs
 set -euo pipefail
@@ -49,6 +50,19 @@ valid_name() { [[ "$1" =~ ^[a-z][a-z0-9-]{0,30}$ ]]; }
 running() { [ "$($ENGINE inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
 network() { $ENGINE network inspect "$1" >/dev/null 2>&1 || $ENGINE network create "${@:2}" "$1" >/dev/null; }
 userns() { [ "$ENGINE" = podman ] && echo "--userns=keep-id" || true; }
+# Une modification du code ne prend effet qu'une fois l'image reconstruite et le dot redémarré :
+# ces deux vérifications disent quand ce n'est pas le cas.
+image_id() { $ENGINE image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null | sed 's/^sha256://'; }
+image_behind_code() { # vrai si un fichier du code est plus récent que l'image
+  local built newest
+  built=$(date -u -d "$($ENGINE image inspect -f '{{.Created}}' "$IMAGE" 2>/dev/null | cut -d. -f1 | cut -c1-19)" +%s 2>/dev/null || echo 0)
+  newest=$(find "$ROOT/image" "$ROOT/Containerfile" -type f -printf '%T@\n' | sort -n | tail -1 | cut -d. -f1)
+  [ "$built" -gt 0 ] && [ "$newest" -gt "$built" ]
+}
+container_behind() { # conteneur → vrai s'il tourne sur une autre image que l'actuelle
+  local used; used="$($ENGINE inspect -f '{{.Image}}' "$1" 2>/dev/null | sed 's/^sha256://')"
+  [ -n "$used" ] && [ "$used" != "$(image_id)" ]
+}
 ensure_image() { $ENGINE image inspect "$IMAGE" >/dev/null 2>&1 || $ENGINE build -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT"; }
 # Le fichier .dot se lit dans l'image (YAML) : node /opt/dot/dotfile.mjs, avec les montages donnés.
 dotfile_tool() { ensure_image; $ENGINE run --rm $(userns) --entrypoint node "$@"; }
@@ -266,7 +280,12 @@ DESKTOP
     $ENGINE run --rm -v "$ROOT/image:/src:ro" -v "$ROOT/tests:/tests:ro" --entrypoint node "$IMAGE" --test "/tests/*.test.*"
     ;;
   start)
-    if running "$ID"; then echo "Le dot « $NAME » tourne déjà."; exit 0; fi
+    if running "$ID"; then
+      echo "Le dot « $NAME » tourne déjà."
+      container_behind "$ID" && echo "⚠️ Il tourne sur une ancienne image : ./dot @$NAME restart pour qu'il prenne la nouvelle." >&2
+      exit 0
+    fi
+    image_behind_code && echo "⚠️ L'image est plus ancienne que le code : le dot démarre sans les dernières modifications. ./dot @$NAME reload pour reconstruire l'image et redémarrer." >&2
     # Créés ici, à l'utilisateur de la machine : sinon le moteur les crée lui-même, à un autre propriétaire.
     mkdir -p "$DIR"/{skills,extensions} "$STATE"/{agent,memory,inbox,workspace,browser,logs,channel/in,channel/out,livrables}
     extract || { echo "Le fichier $DOTFILE ne peut pas être utilisé tel quel (voir ci-dessus)." >&2; exit 1; }
@@ -307,6 +326,23 @@ DESKTOP
     if running "$VAULT"; then quiet $ENGINE stop -t 5 "$VAULT"; fi
     $ENGINE rm -f "$ID" "$VAULT" >/dev/null 2>&1 || true
     echo "Dot « $NAME » arrêté. Il reprendra au prochain démarrage."
+    ;;
+  restart)
+    "$0" "$DIR" stop
+    exec "$0" "$DIR" start
+    ;;
+  reload)
+    # Après une modification du code : l'image (le cache rend la reconstruction rapide si rien n'a
+    # changé), puis ce dot. L'image est commune : les autres dots allumés gardent l'ancienne jusqu'à
+    # leur redémarrage, on les nomme.
+    $ENGINE build -q -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT" >/dev/null
+    "$0" "$DIR" stop
+    "$0" "$DIR" start
+    for d in $(known_dirs); do
+      n="$(basename "$(dotfile_of "$d")" .dot)"; other="$(id_of "$n" "$d")"
+      [ "$other" = "$ID" ] && continue
+      running "$other" && container_behind "$other" && echo "⚠️ « $n » tourne encore sur l'ancienne image : ./dot @$n restart"
+    done
     ;;
   open)
     # Le double-clic sur un .dot : le dot est toujours lancé, puis ce que dit « onclic » dans son en-tête :
@@ -349,8 +385,11 @@ DESKTOP
     else
       built=$(date -u -d "$($ENGINE image inspect -f '{{.Created}}' "$IMAGE" | cut -d. -f1 | cut -c1-19)" +%s 2>/dev/null || echo 0)
       newest=$(find "$ROOT/image" "$ROOT/Containerfile" -type f -printf '%T@\n' | sort -n | tail -1 | cut -d. -f1)
-      if [ "$built" -gt 0 ] && [ "$newest" -gt "$built" ]; then echo "⚠️ image plus ancienne que le code — ./dot build puis redémarrer le dot"
+      if [ "$built" -gt 0 ] && [ "$newest" -gt "$built" ]; then echo "⚠️ image plus ancienne que le code — ./dot @$NAME reload"
       else echo "✅ image à jour"; fi
+      for c in "$ID" "$VAULT"; do
+        running "$c" && container_behind "$c" && echo "⚠️ $([ "$c" = "$ID" ] && echo dot || echo coffre) lancé sur une ancienne image — ./dot @$NAME restart"
+      done
     fi
     if err="$(extract 2>&1 >/dev/null)"; then echo "✅ $(basename "$DOTFILE") lisible, aucun secret visible du dot"
     else echo "❌ $(basename "$DOTFILE") : $err"; fi
@@ -428,8 +467,10 @@ UNIT
     if [ "${2:-}" = "--json" ]; then json_status "$DIR"; echo; exit 0; fi
     if running "$ID"; then echo "Le dot « $NAME » tourne ($ENGINE, $DIR)."; else echo "Le dot « $NAME » ne tourne pas ($DIR)."; fi
     if running "$VAULT"; then echo "Son coffre tourne."; else echo "Son coffre ne tourne pas."; fi
+    if running "$ID" && container_behind "$ID"; then echo "⚠️ Il tourne sur une ancienne image : ./dot @$NAME restart"
+    elif image_behind_code; then echo "⚠️ L'image est plus ancienne que le code : ./dot @$NAME reload"; fi
     ;;
   help|*)
-    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
     ;;
 esac

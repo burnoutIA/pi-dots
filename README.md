@@ -114,6 +114,7 @@ Toutes les commandes d'un dot acceptent, en premier argument :
 | `./dot create`, `copie`, `list`, `use`, `remove` | gérer ses dots |
 | `./dot associer` | ouvrir les fichiers `.dot` d'un double-clic (Linux) |
 | `./dot start` / `./dot stop` | allumer / éteindre le dot et son coffre |
+| `./dot restart` / `./dot reload` | redémarrer ; reconstruire l'image puis redémarrer, après une modification du code (`start`, `status` et `doctor` préviennent quand l'image est plus vieille que le code, ou quand un dot tourne sur une ancienne image) |
 | `./dot open` | ce que fait le double-clic : lancer le dot, puis `onclic` |
 | `./dot chat` | parler au dot depuis ta machine |
 | `./dot ask "…"` | une question, la réponse s'affiche |
