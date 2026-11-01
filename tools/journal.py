@@ -81,7 +81,8 @@ def describe(e) -> str:
         target = e.get("todo") or e.get("objective")
         return f"· {e.get('tool')} {e.get('action')} {target} {what}".rstrip()
     if t == "plan.unchanged":
-        return f"· plan inchangé pour {e.get('objective')} : réexaminé dans {e.get('recheckInMin')} min"
+        when = f"réexaminé dans {e['recheckInMin']} min" if e.get("recheckInMin") else "en attente d'un changement"
+        return f"· plan inchangé pour {e.get('objective')} : {when}"
     if t == "event.queued":
         detail = e.get("schedule") or e.get("watch") or e.get("file") or ""
         late = f" (en retard de {e['lateMin']} min)" if e.get("lateMin", 0) > 15 else ""

@@ -17,6 +17,10 @@ export const STAGES: Stage[] = ["idee", "cadrage", "en_cours", "a_valider", "liv
 export const STAGE_LABEL: Record<Stage, string> = { idee: "Idée", cadrage: "Cadrage", en_cours: "En cours", a_valider: "À valider", livre: "Livré" };
 export type TodoStatus = "todo" | "doing" | "waiting" | "done" | "dropped";
 
+// Un plan qui n'a rien changé n'est réexaminé qu'au prochain changement du projet (carte modifiée,
+// todo ajouté ou terminé) : chacun de ces changements efface idleUntil.
+export const UNTIL_CHANGE = "9999-12-31T00:00:00.000Z";
+
 export interface Objective {
   id: string;
   title: string;
@@ -27,7 +31,7 @@ export interface Objective {
   blocker?: string; // ce qui bloque, et qui doit agir
   nudged?: string; // date de la relance de la personne (une seule par attente)
   result?: string; // quand il est atteint ou abandonné
-  idleUntil?: string; // pas de nouveau plan avant cette date (le dernier n'a rien changé)
+  idleUntil?: string; // pas de nouveau plan avant cette date (le dernier n'a rien changé) ; UNTIL_CHANGE : jusqu'au prochain changement
   created: string;
   updated: string;
 }

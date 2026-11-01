@@ -28,7 +28,7 @@ import { PROJECTS_DIR, forget, readMemory, remember, skillProblems } from "./mem
 import { type Exposure, PROTECTED, applyToMcp, declaredTokens, exposureOf, readLoadout, readUsage, record, setExposure, usageFile, uses } from "./usage.ts";
 import { modelUnavailable, retryMinutes } from "./outage.ts";
 import { type Schedule, nextAfter } from "./schedule.ts";
-import { MEMORY, OPEN, type Plan, STAGES, STAGE_LABEL, type Stage, type Todo, type Work, board, newId, nextWork, now, objectiveBlock, readPlan, stageOf, todoLine, updatePlan } from "./plan.ts";
+import { MEMORY, OPEN, UNTIL_CHANGE, type Plan, STAGES, STAGE_LABEL, type Stage, type Todo, type Work, board, newId, nextWork, now, objectiveBlock, readPlan, stageOf, todoLine, updatePlan } from "./plan.ts";
 
 const HOME = process.env.DOT_HOME ?? "/dot";
 const WORKSPACE = join(HOME, "workspace");
@@ -40,7 +40,16 @@ const WATCHES_FILE = join(MEMORY, "watches.json");
 
 const WORKER = process.env.DOT_ROLE === "worker";
 const num = (name: string, fallback: number) => (process.env[name] && Number.isFinite(Number(process.env[name])) ? Number(process.env[name]) : fallback);
-const RECHECK_MINUTES = num("DOT_RECHECK_MINUTES", num("DOT_HEARTBEAT_MINUTES", 60)); // objectif sans progrès : pas de nouveau plan avant
+const RECHECK_MINUTES = num("DOT_RECHECK_MINUTES", num("DOT_HEARTBEAT_MINUTES", 60)); // objectif sans progrès : pas de nouveau plan avant (autonomie libre)
+// L'autonomie du dot quand personne n'est là (runs : todos, plans, tâches, veilles, boîte, revues).
+//   prudent (par défaut) : un run ne crée de lui-même ni objectif, ni tâche planifiée, ni veille ; il
+//     les propose à la personne, et c'est la conversation qui les crée. Un plan qui ne change rien
+//     n'est réexaminé qu'au prochain changement du projet, jamais sur minuterie.
+//   libre : le run crée ce qu'il juge utile ; un plan inchangé est réexaminé après DOT_RECHECK_MINUTES.
+const AUTONOMY = process.env.DOT_AUTONOMY === "libre" ? "libre" : "prudent";
+const ASK_FIRST = WORKER && AUTONOMY === "prudent";
+const askFirst = (what: string) =>
+  `Not on your own: ${what} is decided with the person (autonomy: prudent). If it is worth it, propose it in a \`notify\` (what, why, how often); once they agree, it is created in the conversation.`;
 const RUN_MINUTES = num("DOT_RUN_MINUTES", 30); // durée maximale d'un run
 const MAX_RUNS = num("DOT_MAX_RUNS", 3); // runs sur un même todo avant de demander de l'aide
 const TICK_MS = num("DOT_TICK_MS", 15_000);
@@ -248,7 +257,11 @@ function planPrompt(plan: Plan, work: Extract<Work, { kind: "plan" }>): string {
 }
 
 function eventPrompt(event: DotEvent): string {
-  return `${event.text}\n\nSi cela demande un travail suivi, crée un objectif (\`objective\` add) ou des todos plutôt que de tout faire maintenant. Si tu as appris quelque chose de durable, note-le avec \`remember\`. Ta réponse finale est un compte-rendu de deux ou trois lignes.`;
+  const followUp =
+    AUTONOMY === "libre"
+      ? "Si cela demande un travail suivi, crée un objectif (`objective` add) ou des todos plutôt que de tout faire maintenant."
+      : "Si cela demande un travail suivi : des todos dans un projet existant (`todo` add) ; un nouveau projet, une tâche récurrente ou une veille, propose-les à la personne avec `notify`, sans les créer toi-même.";
+  return `${event.text}\n\n${followUp} Si tu as appris quelque chose de durable, note-le avec \`remember\`. Ta réponse finale est un compte-rendu de deux ou trois lignes.`;
 }
 
 // --- Un run de travail : un pi à part, dans la session donnée ------------------------------------
@@ -711,7 +724,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // Nouveau plan : s'il ne change rien, l'objectif n'est réexaminé qu'après RECHECK_MINUTES.
+    // Nouveau plan : s'il ne change rien, l'objectif attend un changement (prudent) ou RECHECK_MINUTES (libre).
     const fingerprint = (p: Plan) => JSON.stringify([p.objectives.find((o) => o.id === objective.id)?.status, p.todos.filter((t) => t.objective === objective.id).map((t) => [t.id, t.status])]);
     const before = fingerprint(plan);
     const label = `${objective.title} · plan`;
@@ -729,10 +742,10 @@ export default function (pi: ExtensionAPI) {
     const unchanged = updatePlan((p) => {
       const o = p.objectives.find((x) => x.id === objective.id);
       if (!o || fingerprint(p) !== before) return false;
-      o.idleUntil = later(RECHECK_MINUTES);
+      o.idleUntil = AUTONOMY === "libre" ? later(RECHECK_MINUTES) : UNTIL_CHANGE;
       return true;
     });
-    if (unchanged) log("plan.unchanged", { objective: objective.id, recheckInMin: RECHECK_MINUTES });
+    if (unchanged) log("plan.unchanged", { objective: objective.id, recheckInMin: AUTONOMY === "libre" ? RECHECK_MINUTES : null });
     report(label, result.text);
   }
 
@@ -1294,6 +1307,7 @@ function registerTools(pi: ExtensionAPI) {
         return answer(plan.objectives.length ? plan.objectives.map((o) => objectiveBlock(plan, o, o.status === "active" || o.status === "paused")).join("\n\n") : "No objective.");
       }
       if (args.action === "add") {
+        if (ASK_FIRST) return answer(askFirst("a new objective"), true);
         const title = String(args.title ?? "").trim();
         if (!title) return answer("`add` needs a title.", true);
         const id = newId();
@@ -1456,6 +1470,7 @@ function registerTools(pi: ExtensionAPI) {
         case "list":
           return answer(schedules.length ? schedules.map(describeSchedule).join("\n") : "No scheduled task.");
         case "add": {
+          if (ASK_FIRST) return answer(askFirst("a scheduled task"), true);
           const prompt = String(args.prompt ?? "").trim();
           const kinds = [args.every_minutes, args.at, args.once].filter((v) => v !== undefined && v !== "");
           if (!prompt || kinds.length !== 1) return answer("`add` needs a prompt and exactly one of every_minutes, at, once.", true);
@@ -1523,6 +1538,7 @@ function registerTools(pi: ExtensionAPI) {
         case "list":
           return answer(watches.length ? watches.map(show).join("\n") : "No watch.");
         case "add": {
+          if (ASK_FIRST) return answer(askFirst("a new watch"), true);
           const command = String(args.command ?? "").trim();
           const prompt = String(args.prompt ?? "").trim();
           const every = Number(args.every_minutes);

@@ -29,15 +29,24 @@ const server = http.createServer((req, res) => {
     const r = JSON.parse(body || "{}");
     const text = (m) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((c) => c.text ?? "").join(""));
     const users = (r.messages ?? []).filter((m) => m.role === "user").map(text);
+    // Le todo en cours : le dernier donné (la session de l'objectif garde aussi les précédents).
+    const todoNow = users.filter((u) => u.includes("Ton todo :")).at(-1) ?? "";
     requests.push({ model: r.model, role: req.headers["x-dot-role"], users, all: (r.messages ?? []).map(text) });
     res.writeHead(200, { "content-type": "text/event-stream" });
     const chunk = (o) => res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 0, model: r.model, ...o })}\n\n`);
     // Le todo « obstine » : un modèle qui s'acharne, une commande qui échoue chaque fois un peu différente.
-    if (users.some((u) => u.includes("Ton todo : obstine"))) {
+    if (todoNow.includes("Ton todo : obstine")) {
       stubborn += 1;
       const call = { index: 0, id: `c${stubborn}`, type: "function", function: { name: "bash", arguments: JSON.stringify({ command: `ls /introuvable-${stubborn}` }) } };
       chunk({ choices: [{ index: 0, delta: { role: "assistant", tool_calls: [call] }, finish_reason: null }] });
       chunk({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 300, completion_tokens: 20, total_tokens: 320 } });
+      return res.end("data: [DONE]\n\n");
+    }
+    // Le todo « propose » : le modèle veut créer seul une tâche récurrente, puis conclut.
+    if (todoNow.includes("Ton todo : propose") && r.messages.at(-1)?.role !== "tool") {
+      const call = { index: 0, id: "s1", type: "function", function: { name: "schedule", arguments: JSON.stringify({ action: "add", prompt: "relancer chaque lundi", at: "09:00" }) } };
+      chunk({ choices: [{ index: 0, delta: { role: "assistant", tool_calls: [call] }, finish_reason: null }] });
+      chunk({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } });
       return res.end("data: [DONE]\n\n");
     }
     chunk({ choices: [{ index: 0, delta: { role: "assistant", content: `réponse de ${r.model}` }, finish_reason: null }] });
@@ -190,5 +199,19 @@ test("un run qui s'acharne : point d'étape après les échecs, puis arrêt au p
   assert.ok(run.length < 8, `le run est arrêté tôt (${run.length} requêtes)`);
   const plan = JSON.parse(readFileSync(join(MEMORY, "plan.json"), "utf8"));
   assert.match(plan.todos[0].reason, /plafond/);
+  await stopDot();
+});
+
+test("autonomie prudente : un run ne crée pas seul une tâche planifiée, il la propose", { timeout: 120_000 }, async () => {
+  // Le run arrêté au plafond du test précédent laisse un délai avant le run suivant : on l'efface.
+  const st = state();
+  delete st.backoffUntil;
+  writeFileSync(join(MEMORY, "state.json"), JSON.stringify(st));
+  await startDot("modele-b");
+  writePlan(["propose"]);
+  const run = () => requests.filter((r) => r.users.some((u) => u.includes("Ton todo : propose")));
+  await until(() => run().some((r) => r.all.some((m) => m.includes("Not on your own"))), 60_000, "le refus n'arrive pas au modèle");
+  assert.ok(!existsSync(join(MEMORY, "schedules.json")) || JSON.parse(readFileSync(join(MEMORY, "schedules.json"), "utf8")).length === 0, "aucune tâche créée");
+  await until(() => !state().running, 30_000, "le run ne se termine pas");
   await stopDot();
 });

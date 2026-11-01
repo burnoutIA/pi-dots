@@ -141,8 +141,9 @@ Valeurs par défaut entre parenthèses :
 | `DOT_INTERFACE` | `tui` ou `rpc` (voir plus bas) |
 | `TELEGRAM_OWNER_ID` | ton identifiant Telegram ; vide : pas de Telegram |
 | `DOT_MEMORY`, `DOT_CPUS`, `DOT_PIDS` | plafonds du conteneur (8g, 4, 2048) |
-| `DOT_RECHECK_MINUTES` | un objectif dont le plan n'a rien changé n'est réexaminé qu'après ce délai (60) |
+| `DOT_RECHECK_MINUTES` | en autonomie `libre`, un objectif dont le plan n'a rien changé n'est réexaminé qu'après ce délai (60) |
 | `DOT_RUN_MINUTES` | durée maximale d'un run de travail (30) |
+| `DOT_AUTONOMY` | `prudent` (par défaut) : seul, un run ne crée ni objectif, ni tâche planifiée, ni veille, il te les propose ; un plan inchangé attend un changement du projet. `libre` : il crée ce qu'il juge utile, et un plan inchangé est réexaminé après `DOT_RECHECK_MINUTES` |
 | `DOT_MODEL_SLOTS` | appels au modèle en même temps, par le coffre (1 ; 0 : pas de file) |
 | `DOT_RUN_TOKENS`, `DOT_CHECKPOINT_TURNS`, `DOT_FAIL_STREAK` | plafond de jetons d'un run (3 000 000), point d'étape tous les N tours (12) ou après N échecs d'outil d'affilée (4) |
 | `DOT_MAX_RUNS` | runs sur un même todo avant de demander de l'aide (3) |
@@ -286,7 +287,8 @@ Toutes les 15 s, un battement lit le plan **sans passer par le modèle**. Il ne 
 - **Reprise** : un todo coupé par un arrêt est repris au démarrage ; une tâche planifiée échue pendant un arrêt est lancée au démarrage.
 - **Garde-fous** :
   - un todo non terminé après `DOT_MAX_RUNS` runs passe en attente, et le dot te demande de l'aide ;
-  - un plan qui ne change rien n'est réexaminé qu'après `DOT_RECHECK_MINUTES` ;
+  - un plan qui ne change rien n'est réexaminé qu'au prochain changement du projet (carte modifiée, todo ajouté ou terminé), ou après `DOT_RECHECK_MINUTES` en autonomie `libre` ;
+  - en autonomie `prudent` (par défaut), un run ne crée de lui-même ni objectif, ni tâche planifiée, ni veille : il te les propose, et c'est la conversation qui les crée quand tu es d'accord ;
   - un run est coupé après `DOT_RUN_MINUTES` ;
   - un même appel d'outil répété `DOT_LOOP_REPEATS` fois dans un run, à la suite ou non, arrête le run ;
   - un run est arrêté au-delà de `DOT_RUN_TOKENS` jetons (3 millions, entrée et sortie cumulées) ;

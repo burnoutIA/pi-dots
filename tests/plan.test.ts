@@ -30,6 +30,7 @@ test("un objectif sans todo ouvert demande un nouveau plan, sauf s'il est en att
   assert.equal(plan.nextWork({ objectives: [objective("a")], todos: [todo("t1", "a", "done")] }).kind, "plan");
   const later = new Date(Date.now() + 3600_000).toISOString();
   assert.equal(plan.nextWork({ objectives: [objective("a", { idleUntil: later })], todos: [] }), null);
+  assert.equal(plan.nextWork({ objectives: [objective("a", { idleUntil: plan.UNTIL_CHANGE })], todos: [] }), null, "autonomie prudente : en attente d'un changement");
 });
 
 test("tableau : une idée ne lance rien, un projet à valider fait ses todos sans replanifier", () => {
