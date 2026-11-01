@@ -25,7 +25,7 @@ import { Type } from "typebox";
 import { describeCall, render as renderLive, writeLive } from "./live.ts";
 import { log, pruneLogs } from "./log.ts";
 import { PROJECTS_DIR, forget, readMemory, remember, skillProblems } from "./memory.ts";
-import { type Exposure, PROTECTED, applyToMcp, declaredTokens, readLoadout, readUsage, record, setExposure, usageFile, uses } from "./usage.ts";
+import { type Exposure, PROTECTED, applyToMcp, declaredTokens, exposureOf, readLoadout, readUsage, record, setExposure, usageFile, uses } from "./usage.ts";
 import { modelUnavailable, retryMinutes } from "./outage.ts";
 import { type Schedule, nextAfter } from "./schedule.ts";
 import { MEMORY, OPEN, type Plan, STAGES, STAGE_LABEL, type Stage, type Todo, type Work, board, newId, nextWork, now, objectiveBlock, readPlan, stageOf, todoLine, updatePlan } from "./plan.ts";
@@ -590,7 +590,7 @@ export default function (pi: ExtensionAPI) {
         "3. Retours de la personne : relis ce qu'elle t'a dit de ton travail (ta mémoire, ta conversation). Tiens-en compte.",
         "4. Ta mémoire et tes consignes : pars des lignes « mémoire » et « notes » de `doctor` (faits anciens, liés à un objectif clos, doublons, valeur sensible), puis reprends MEMORY.md fait par fait. Chacun est-il encore vrai ? Compare avec ton plan, tes livrables et ce que la personne a dit depuis. Retire (`forget`) ou remplace (`remember` avec `replaces`) ce qui est périmé, contredit, en double, ou qui contient la valeur d'un secret. Fais de même pour les fichiers de consignes que tu lis (AGENTS.md, tes skills) : une consigne qui renvoie à un fichier absent ou décrit une méthode abandonnée, corrige-la. Pour un fait dont tu n'es pas sûr qu'il tienne encore, ne le supprime pas au hasard : pose la question à la personne (un seul `notify` qui regroupe tes doutes).",
         "5. Ton tableau : chaque projet est-il à la bonne étape, avec sa suite et ce qui bloque ? Un projet « À valider » qui attend la personne depuis plus de 3 jours : relance-la une seule fois (`notify` qui regroupe ces projets, puis `objective` update nudged), puis laisse-le en attente sans insister. Une idée oubliée depuis longtemps : demande-lui si elle tient toujours.",
-        "6. Budget : lance `budget` show. Passe en `deferred` les outils lourds et peu utilisés, remets en `direct` ceux que tu as dû recharger souvent. Allège les skills trop longs, supprime ceux qui ne servent plus.",
+        "6. Budget : lance `budget` show. Les outils déclarés sont un réglage fixe : tu ne le changes pas toi-même. Si un serveur lourd ne sert jamais, ou si tu as dû recharger souvent un outil différé, propose le changement à la personne (dans le même `notify` que tes autres questions, chiffres d'usage à l'appui). Allège les skills trop longs, supprime ceux qui ne servent plus.",
         "7. Note avec `remember` chaque changement, avec la mesure de départ (ex. « 24/10 : skill X allégé, 60k jetons par run avant »), pour pouvoir comparer à la prochaine revue.",
         "Ne préviens la personne que si tu as changé quelque chose qui la concerne, ou si tu as besoin de son avis.",
       ].join("\n"),
@@ -1016,14 +1016,6 @@ function declared(pi: ExtensionAPI) {
   return pi.getAllTools().filter((t: any) => active.has(t.name));
 }
 
-// Outils mis en différé mais rechargés souvent ces 7 derniers jours : le choix est à revoir.
-function reloaded(pi: ExtensionAPI): string[] {
-  const usage = readUsage(MEMORY);
-  const deferredNow = Object.entries(readLoadout(MEMORY)).filter(([, e]) => e === "deferred").map(([n]) => n);
-  const often = deferredNow.filter((n) => uses(usage.tools[n], 7).count >= 3);
-  return often.length ? [`You deferred these tools but used them often in the last 7 days: ${often.join(", ")}. Consider making them direct again (\`budget\` set).`] : [];
-}
-
 // Une note fixe pour la session (le début du contexte reste identique d'un appel à l'autre).
 function budgetSection(pi: ExtensionAPI, ctx: any): string {
   const model = ctx?.model;
@@ -1033,9 +1025,8 @@ function budgetSection(pi: ExtensionAPI, ctx: any): string {
   return [
     `Your context budget: model ${model ? `${model.provider}/${model.id}` : "unknown"}${window ? `, context window ${window} tokens` : ""}.`,
     `Before you do anything, your instructions and the ${tools.length} tools declared to you take thousands of tokens (tools alone ≈ ${toolTokens}), on every single call. Every token costs time, and the model may run on the person's own hardware.`,
-    "Be frugal: keep skills short (the essentials in SKILL.md, details in separate files read only when needed), make scripts print only what you need, never paste large outputs, and keep rarely used tools deferred (`tool_search` loads them when needed).",
-    "`budget` shows what you really use (tools, skills, runs) and lets you choose what stays declared.",
-    ...reloaded(pi),
+    "Be frugal: keep skills short (the essentials in SKILL.md, details in separate files read only when needed), make scripts print only what you need, never paste large outputs.",
+    "Which tools are declared is a fixed setting: deferred tools are found with `tool_search`. You never change it while working; `budget` shows your real usage, and you propose a change to the person if one is worth it.",
   ].join("\n");
 }
 
@@ -1048,7 +1039,7 @@ function budgetReport(pi: ExtensionAPI, ctx: any): string {
   const rows = pi
     .getAllTools()
     .filter((t: any) => t.exposure !== "hidden")
-    .map((t: any) => ({ name: t.name, exposure: active.has(t.name) ? "direct" : loadout[t.name] ?? t.exposure, tokens: declaredTokens(t), ...uses(usage.tools[t.name]) }))
+    .map((t: any) => ({ name: t.name, exposure: active.has(t.name) ? "direct" : exposureOf(loadout, t.name) ?? t.exposure, tokens: declaredTokens(t), ...uses(usage.tools[t.name]) }))
     .sort((a: any, b: any) => b.tokens - a.tokens);
   const declaredRows = rows.filter((r: any) => r.exposure === "direct");
   const skills = existsSync(SKILLS_DIR)
@@ -1096,7 +1087,7 @@ function alreadySent(text: string): boolean {
 function registerTools(pi: ExtensionAPI) {
   // Les outils du dot sont déclarés selon ses choix (loadout.json) ; ses outils de base, toujours.
   const loadout = readLoadout(MEMORY);
-  const reg = (def: any) => pi.registerTool(loadout[def.name] === "deferred" && !PROTECTED.has(def.name) ? { ...def, exposure: "deferred" } : def);
+  const reg = (def: any) => pi.registerTool(exposureOf(loadout, def.name) === "deferred" && !PROTECTED.has(def.name) ? { ...def, exposure: "deferred" } : def);
 
   reg({
     name: "notify",
@@ -1171,8 +1162,8 @@ function registerTools(pi: ExtensionAPI) {
     label: "budget",
     description:
       "Your context budget. action `show`: your model and context window, what each declared tool costs on every call, how often you really used each tool and skill (30 days), and the token cost of your recent work runs. " +
-      "action `set` (tools, exposure): choose what is declared to the model — `direct` (always declared) or `deferred` (not declared; `tool_search` loads it when you need it). Decide from real usage: defer heavy tools you rarely use, keep direct those you use often. Your base tools always stay direct. Takes effect from your next run.",
-    promptSnippet: "budget: see your real tool/skill usage and token costs, choose which tools stay declared",
+      "action `set` (tools, exposure): change what is declared to the model — `direct` (always declared) or `deferred` (not declared; `tool_search` loads it). This is a fixed setting decided with the person: use `set` only in the conversation, when the person asks for it or has agreed to your proposal, never on your own. An MCP tool sets its whole server (all its tools together). Your base tools always stay direct. Takes effect from the next run (the conversation: at the next start of the dot).",
+    promptSnippet: "budget: see your real tool/skill usage and token costs",
     parameters: Type.Object({
       action: Type.String({ description: "show | set" }),
       tools: Type.Optional(Type.Array(Type.String(), { description: "With set: tool names, e.g. mcp__playwright__browser_drag" })),
@@ -1181,6 +1172,7 @@ function registerTools(pi: ExtensionAPI) {
     async execute(_id: string, args: any, _signal: any, _onUpdate: any, ctx: any) {
       if (args.action === "show") return answer(budgetReport(pi, ctx));
       if (args.action === "set") {
+        if (WORKER) return answer("Not during a run: which tools are declared is decided with the person. If a change is worth it, propose it (one `notify`: which tools, why, from your usage figures).", true);
         const exposure = args.exposure as Exposure;
         if (exposure !== "direct" && exposure !== "deferred") return answer("exposure: direct or deferred.", true);
         const known = new Set(pi.getAllTools().map((t: any) => t.name));
@@ -1192,7 +1184,7 @@ function registerTools(pi: ExtensionAPI) {
           if (existsSync(MCP_DEFAULTS)) writeFileSync(MCP_FILE, JSON.stringify(applyToMcp(JSON.parse(readFileSync(MCP_DEFAULTS, "utf8")), readLoadout(MEMORY)), null, 2) + "\n");
         } catch {}
         log("budget.set", { exposure, tools: applied, refused: refused.length ? refused : undefined });
-        return answer(`${exposure}: ${applied.join(", ") || "nothing"}${refused.length ? ` · refused (base tools stay direct): ${refused.join(", ")}` : ""}. Takes effect from your next run.`);
+        return answer(`${exposure}: ${applied.join(", ") || "nothing"}${refused.length ? ` · refused (base tools stay direct): ${refused.join(", ")}` : ""}. Takes effect from the next run (the conversation: at the next start of the dot).`);
       }
       return answer("Unknown action: use show or set.", true);
     },

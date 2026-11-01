@@ -14,14 +14,24 @@ dot_log "environment.start"
 # Fichiers fournis par le dépôt : remplacés à chaque démarrage (une mise à jour de l'image s'applique).
 cp /opt/dot/defaults/APPEND_SYSTEM.md "$AGENT/APPEND_SYSTEM.md"
 cp /opt/dot/defaults/mcp.json "$AGENT/mcp.json"
-# Les outils que le dot a choisi de ne charger qu'à la demande (outil budget) : reportés dans mcp.json.
+# Les outils chargés seulement à la demande (réglage fixe, outil budget) : reportés dans mcp.json.
+# Un ancien réglage outil par outil d'un serveur MCP (moitié déclaré, moitié à chercher) est remis à plat.
 if [ -f "$DOT_HOME/memory/loadout.json" ]; then
   node --input-type=module -e "
     import { readFileSync, writeFileSync } from 'node:fs';
-    import { applyToMcp, readLoadout } from '/opt/dot/extensions/dot/usage.ts';
+    import { applyToMcp, normalizeLoadout, readLoadout, loadoutFile } from '/opt/dot/extensions/dot/usage.ts';
+    const dir = '$DOT_HOME/memory';
+    const { loadout, reset } = normalizeLoadout(readLoadout(dir));
+    if (reset.length) {
+      writeFileSync(loadoutFile(dir), JSON.stringify(loadout, null, 2) + '\\n');
+      console.log('serveurs MCP remis entièrement déclarés (réglage outil par outil retiré) : ' + reset.join(', '));
+    }
     const base = JSON.parse(readFileSync('/opt/dot/defaults/mcp.json', 'utf8'));
-    writeFileSync('$AGENT/mcp.json', JSON.stringify(applyToMcp(base, readLoadout('$DOT_HOME/memory')), null, 2));
-  " || echo "loadout.json ignoré (illisible)"
+    writeFileSync('$AGENT/mcp.json', JSON.stringify(applyToMcp(base, loadout), null, 2));
+  " | while read -r line; do
+    echo "$line"
+    dot_log "budget.normalize" "\"text\":$(printf '%s' "$line" | jq -Rs .)"
+  done || echo "loadout.json ignoré (illisible)"
 fi
 # Les extensions du dépôt sont chargées par pi en options (-e), sans être copiées : le dossier
 # extensions/ du dot (monté depuis son dossier sur la machine) ne contient que les siennes.

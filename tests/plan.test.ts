@@ -178,20 +178,25 @@ test("usage : appels comptés par jour, skill reconnu, fenêtre de 30 jours", as
   assert.equal(u.skillOf({ command: "echo bonjour" }), null);
 });
 
-test("loadout : les outils de base restent déclarés ; le différé est reporté dans la config MCP", async () => {
+test("loadout : réglage fixe, un serveur MCP en entier, les outils de base toujours déclarés", async () => {
   const u = await import(`${src}/extensions/dot/usage.ts`);
-  const { mkdtempSync } = await import("node:fs");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
   const d = mkdtempSync(join(tmpdir(), "dot-loadout-"));
-  const r = u.setExposure(d, ["bash", "mcp__playwright__browser_drag", "watch"], "deferred");
+  // Un ancien réglage mixte : la moitié du navigateur différée, l'autre déclarée.
+  writeFileSync(u.loadoutFile(d), JSON.stringify({ mcp__playwright__browser_drag: "deferred", mcp__playwright__browser_click: "deferred", grep: "deferred" }));
+  assert.deepEqual(u.normalizeLoadout(u.readLoadout(d)), { loadout: { grep: "deferred" }, reset: ["playwright"] });
+  const r = u.setExposure(d, ["bash", "mcp__ketch__docs", "mcp__ketch__code", "watch"], "deferred");
   assert.deepEqual(r.refused, ["bash"]);
-  assert.deepEqual(u.readLoadout(d), { mcp__playwright__browser_drag: "deferred", watch: "deferred" });
-  const base = { mcpServers: { playwright: { command: "x" }, ketch: { command: "k", toolExposure: { crawl: "hidden" } } } };
+  assert.deepEqual(u.readLoadout(d), { grep: "deferred", "mcp__ketch__*": "deferred", watch: "deferred" }, "le serveur entier, et l'ancien réglage mixte retiré");
+  assert.equal(u.exposureOf(u.readLoadout(d), "mcp__ketch__scrape"), "deferred");
+  const base = { mcpServers: { playwright: { command: "x", exposure: "direct" }, ketch: { command: "k", exposure: "direct", toolExposure: { crawl: "hidden" } } } };
   const mcp = u.applyToMcp(base, u.readLoadout(d));
-  assert.deepEqual(mcp.mcpServers.playwright.toolExposure, { browser_drag: "deferred" });
+  assert.equal(mcp.mcpServers.ketch.exposure, "deferred");
   assert.deepEqual(mcp.mcpServers.ketch.toolExposure, { crawl: "hidden" });
-  assert.equal(base.mcpServers.playwright.toolExposure, undefined, "la config d'origine n'est pas modifiée");
-  u.setExposure(d, ["watch"], "direct");
-  assert.deepEqual(u.readLoadout(d), { mcp__playwright__browser_drag: "deferred" });
+  assert.equal(mcp.mcpServers.playwright.exposure, "direct");
+  assert.equal(base.mcpServers.ketch.exposure, "direct", "la config d'origine n'est pas modifiée");
+  u.setExposure(d, ["mcp__ketch__scrape", "watch"], "direct");
+  assert.deepEqual(u.readLoadout(d), { grep: "deferred" });
 });
 
 test("suivi en direct : appels décrits en clair, étapes et résultat mis en forme", async () => {

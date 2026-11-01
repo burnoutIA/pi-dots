@@ -1,9 +1,13 @@
 // Usage des outils et des skills, et choix de ce qui est déclaré au modèle.
 //
 // Chaque outil déclaré au modèle coûte des jetons à chaque appel, qu'il serve ou non. Le dot mesure
-// donc ce qu'il utilise vraiment (usage.json : nombre d'appels par jour, 60 jours gardés) et décide
-// lui-même ce qui reste déclaré (`direct`) et ce qui n'est chargé qu'à la demande (`deferred`, trouvé
-// par tool_search) : loadout.json. Ses outils de base restent toujours déclarés.
+// ce qu'il utilise vraiment (usage.json : nombre d'appels par jour, 60 jours gardés). Ce qui reste
+// déclaré (`direct`) ou n'est chargé qu'à la demande (`deferred`, trouvé par tool_search) est un
+// réglage fixe (loadout.json), changé avec la personne, jamais en cours de travail : un modèle local
+// travaille mieux avec des outils prévisibles qu'avec un jeu qu'il déplace lui-même.
+//
+// Un serveur MCP se règle en entier (clé mcp__<serveur>__*) : la moitié d'un navigateur déclarée et
+// l'autre à chercher, c'est l'état mixte qui égare le modèle. Ses outils de base restent toujours déclarés.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -59,36 +63,52 @@ export function uses(daily: Daily | undefined, days = 30, at = new Date()): { co
   return { count: dates.filter((d) => d >= limit).reduce((n, d) => n + daily[d], 0), last: dates.at(-1) };
 }
 
-// Ce que le dot demande ; renvoie les refus (outils de base).
+const MCP_TOOL = /^mcp__(.+?)__/;
+// La clé de réglage d'un outil : lui-même, ou tout son serveur pour un outil MCP.
+export const keyOf = (name: string) => {
+  const server = MCP_TOOL.exec(name)?.[1];
+  return server ? `mcp__${server}__*` : name;
+};
+export const exposureOf = (loadout: Record<string, Exposure>, name: string): Exposure | undefined => loadout[keyOf(name)] ?? loadout[name];
+
+// Un ancien réglage outil par outil d'un serveur MCP (état mixte) est retiré : le serveur redevient
+// entièrement déclaré, comme dans la configuration d'origine. Renvoie les serveurs remis à plat.
+export function normalizeLoadout(loadout: Record<string, Exposure>): { loadout: Record<string, Exposure>; reset: string[] } {
+  const out: Record<string, Exposure> = {};
+  const reset = new Set<string>();
+  for (const [name, exposure] of Object.entries(loadout)) {
+    const server = MCP_TOOL.exec(name)?.[1];
+    if (server && !name.endsWith("__*")) reset.add(server);
+    else out[name] = exposure;
+  }
+  return { loadout: out, reset: [...reset] };
+}
+
+// Applique un réglage ; renvoie les clés réglées et les refus (outils de base).
 export function setExposure(dir: string, names: string[], exposure: Exposure): { applied: string[]; refused: string[] } {
-  const loadout = readLoadout(dir);
-  const applied: string[] = [];
+  const loadout = normalizeLoadout(readLoadout(dir)).loadout;
+  const applied = new Set<string>();
   const refused: string[] = [];
   for (const name of names) {
     if (PROTECTED.has(name)) refused.push(name);
     else {
-      if (exposure === "direct") delete loadout[name];
-      else loadout[name] = exposure;
-      applied.push(name);
+      const key = keyOf(name);
+      if (exposure === "direct") delete loadout[key];
+      else loadout[key] = exposure;
+      applied.add(key);
     }
   }
   writeFileSync(loadoutFile(dir), JSON.stringify(loadout, null, 2) + "\n");
-  return { applied, refused };
+  return { applied: [...applied], refused };
 }
 
-// Report du choix dans la configuration MCP de pi (toolExposure par serveur), pour les outils
-// mcp__<serveur>__<outil>. Part toujours de la configuration d'origine du dépôt, dont les réglages
-// (ex. « hidden ») restent prioritaires.
+// Report du choix dans la configuration MCP de pi : un serveur différé passe en exposure « deferred ».
+// Part toujours de la configuration d'origine du dépôt, dont les réglages (ex. « hidden ») restent prioritaires.
 export function applyToMcp(base: any, loadout: Record<string, Exposure>): any {
   const mcp = JSON.parse(JSON.stringify(base));
   for (const [server, conf] of Object.entries<any>(mcp.mcpServers ?? {})) {
-    const prefixes = [`mcp__${server}__`, `mcp__${server.replace(/-/g, "_")}__`];
-    const chosen: Record<string, string> = {};
-    for (const [name, exposure] of Object.entries(loadout)) {
-      const prefix = prefixes.find((p) => name.startsWith(p));
-      if (prefix && exposure === "deferred") chosen[name.slice(prefix.length)] = exposure;
-    }
-    if (Object.keys(chosen).length) conf.toolExposure = { ...chosen, ...(conf.toolExposure ?? {}) };
+    const chosen = loadout[`mcp__${server}__*`] ?? loadout[`mcp__${server.replace(/-/g, "_")}__*`];
+    if (chosen === "deferred" && conf.exposure !== "hidden") conf.exposure = "deferred";
   }
   return mcp;
 }
