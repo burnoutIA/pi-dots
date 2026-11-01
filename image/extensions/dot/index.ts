@@ -45,6 +45,9 @@ const RUN_MINUTES = num("DOT_RUN_MINUTES", 30); // durée maximale d'un run
 const MAX_RUNS = num("DOT_MAX_RUNS", 3); // runs sur un même todo avant de demander de l'aide
 const TICK_MS = num("DOT_TICK_MS", 15_000);
 const LOOP_REPEATS = num("DOT_LOOP_REPEATS", 5); // même appel d'outil répété : boucle probable
+const RUN_TOKENS = num("DOT_RUN_TOKENS", 3_000_000); // jetons (entrée + sortie, cumulés) au-delà desquels un run est arrêté
+const CHECKPOINT_TURNS = num("DOT_CHECKPOINT_TURNS", 12); // point d'étape dans un run, tous les N tours
+const FAIL_STREAK = num("DOT_FAIL_STREAK", 4); // échecs d'outil d'affilée : point d'étape tout de suite
 const REVIEW_DAYS = num("DOT_REVIEW_DAYS", 7); // revue de son budget par le dot (0 = jamais)
 const SKILLS_DIR = join(process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent"), "skills");
 const LATE_SKIP_MS = 15 * 60_000;
@@ -279,6 +282,7 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
     const stats = { turns: 0, toolCalls: 0, tools: {} as Record<string, number>, tokensIn: 0, tokensOut: 0, maxRepeat: 0 };
     const seen = new Map<string, number>(); // appel (nom + arguments) → nombre de fois dans ce run
     let loopStopped = false;
+    let capped = false; // plafond de jetons atteint
 
     function onEvent(event: any) {
       if (event.type === "turn_end") {
@@ -291,6 +295,14 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
       stats.tokensIn += Number(m.usage?.input ?? 0) + Number(m.usage?.cacheRead ?? 0);
       stats.tokensOut += Number(m.usage?.output ?? 0);
       live.tokens = stats.tokensIn + stats.tokensOut;
+      // Plafond de jetons : la durée seule laisse filer une impasse coûteuse (beaucoup de tours sur un
+      // gros contexte) et coupe à tort un travail long mais sobre.
+      if (live.tokens > RUN_TOKENS && !capped && !loopStopped) {
+        capped = true;
+        log("run.capped", { ...info, tokens: live.tokens, limit: RUN_TOKENS, turns: stats.turns });
+        errors = `run arrêté : plafond de ${RUN_TOKENS} jetons atteint (${stats.turns} tours)`;
+        child.kill("SIGTERM");
+      }
       for (const call of (m.content ?? []).filter((c: any) => c.type === "toolCall")) live.steps.push({ t: new Date().toISOString(), label: describeCall(call.name, call.arguments) });
       live.steps = live.steps.slice(-60);
       writeLive(LIVE_FILE, live);
@@ -334,10 +346,10 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
     }, RUN_MINUTES * 60_000);
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      const ok = code === 0 && !!text && !loopStopped;
+      const ok = code === 0 && !!text && !loopStopped && !capped;
       // SIGKILL sans dépassement de durée : en général, le noyau a tué pi faute de mémoire.
       const killed = signal === "SIGKILL" && !timedOut ? "tué par le système (mémoire ?)" : undefined;
-      const result = text || killed || errors.trim() || `pi s'est arrêté (code ${code})`;
+      const result = capped || loopStopped ? `${errors}${text ? `\nDernier état : ${text}` : ""}` : text || killed || errors.trim() || `pi s'est arrêté (code ${code})`;
       const unavailable = modelUnavailable({ ok, tokensOut: stats.tokensOut, toolCalls: stats.toolCalls, error: errors });
       log("run.end", {
         ...info,
@@ -346,6 +358,7 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
         signal: signal ?? undefined,
         timedOut: timedOut || undefined,
         loopStopped: loopStopped || undefined,
+        capped: capped || undefined,
         durationS: Math.round((Date.now() - started) / 1000),
         ...stats,
         error: ok ? undefined : (killed ?? errors.trim().slice(0, 500)) || undefined,
@@ -360,6 +373,38 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
 }
 
 // --- Rappel des fichiers persistants dans le prompt système ---------------------------------------
+
+// Point d'étape dans un run : tous les CHECKPOINT_TURNS tours, ou dès FAIL_STREAK échecs d'outil
+// d'affilée (quinze façons différentes de rater la même chose ne sont pas une boucle « identique »),
+// le run se demande ce qu'il a obtenu. Le plafond de jetons reste la limite dure.
+function checkpoints(pi: ExtensionAPI) {
+  let turns = 0;
+  let sinceCheck = 0;
+  let failures = 0;
+  pi.on("tool_result", (event: any) => {
+    failures = event.isError ? failures + 1 : 0;
+  });
+  pi.on("turn_end", () => {
+    turns += 1;
+    sinceCheck += 1;
+    const failing = failures >= FAIL_STREAK;
+    if (sinceCheck < CHECKPOINT_TURNS && !failing) return;
+    log("run.checkpoint", { turns, reason: failing ? "échecs" : "tours", failures });
+    sinceCheck = 0;
+    failures = 0;
+    const content = [
+      `[dot:point d'étape] ${failing ? `Tes ${FAIL_STREAK} dernières actions ont échoué.` : `Tu en es à ${turns} tours dans ce run.`}`,
+      "Fais le point, en une phrase : qu'as-tu obtenu de concret depuis le dernier point ?",
+      "- Tu avances : continue.",
+      "- Tu essaies encore une variante de la même approche, ou tu n'as rien obtenu : arrête-toi. Garde ce que tu as, note dans les notes du projet ce qui ne marche pas et pourquoi, mets le todo en attente avec ta question (`todo` wait) ou termine avec ce que tu as, puis fais ton compte-rendu.",
+    ].join("\n");
+    try {
+      pi.sendMessage({ customType: "dot-checkpoint", content, display: true }, { deliverAs: "steer" });
+    } catch (error: any) {
+      log("run.checkpoint", { error: String(error?.message ?? error) });
+    }
+  });
+}
 
 // L'id de projet donné à remember/forget : undefined (mémoire globale), l'id s'il existe, null sinon.
 function projectOf(id: unknown): string | undefined | null {
@@ -432,7 +477,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   registerTools(pi);
-  if (WORKER) return;
+  if (WORKER) {
+    checkpoints(pi);
+    return;
+  }
 
   // ===== Conversation : le battement ==========================================================
 
@@ -838,6 +886,7 @@ function journalToday(): string {
 
 const PROBLEM_TYPES: Record<string, string> = {
   "loop.suspect": "boucle arrêtée",
+  "run.capped": "run arrêté (plafond de jetons)",
   "todo.stuck": "todo bloqué",
   "model.down": "modèle injoignable",
   "pi.exit": "arrêt de pi",

@@ -142,6 +142,7 @@ Valeurs par défaut entre parenthèses :
 | `DOT_MEMORY`, `DOT_CPUS`, `DOT_PIDS` | plafonds du conteneur (8g, 4, 2048) |
 | `DOT_RECHECK_MINUTES` | un objectif dont le plan n'a rien changé n'est réexaminé qu'après ce délai (60) |
 | `DOT_RUN_MINUTES` | durée maximale d'un run de travail (30) |
+| `DOT_RUN_TOKENS`, `DOT_CHECKPOINT_TURNS`, `DOT_FAIL_STREAK` | plafond de jetons d'un run (3 000 000), point d'étape tous les N tours (12) ou après N échecs d'outil d'affilée (4) |
 | `DOT_MAX_RUNS` | runs sur un même todo avant de demander de l'aide (3) |
 | `DOT_LOOP_REPEATS` | même appel d'outil répété dans un run : boucle, le run est arrêté (5) |
 | `DOT_REVIEW_DAYS` | rythme du bilan du dot (7 ; 0 = jamais) |
@@ -284,7 +285,9 @@ Toutes les 15 s, un battement lit le plan **sans passer par le modèle**. Il ne 
   - un todo non terminé après `DOT_MAX_RUNS` runs passe en attente, et le dot te demande de l'aide ;
   - un plan qui ne change rien n'est réexaminé qu'après `DOT_RECHECK_MINUTES` ;
   - un run est coupé après `DOT_RUN_MINUTES` ;
-  - un même appel d'outil répété `DOT_LOOP_REPEATS` fois dans un run, à la suite ou non, arrête le run.
+  - un même appel d'outil répété `DOT_LOOP_REPEATS` fois dans un run, à la suite ou non, arrête le run ;
+  - un run est arrêté au-delà de `DOT_RUN_TOKENS` jetons (3 millions, entrée et sortie cumulées) ;
+  - point d'étape : tous les `DOT_CHECKPOINT_TURNS` tours (12), ou après `DOT_FAIL_STREAK` échecs d'outil d'affilée (4), le run doit dire ce qu'il a obtenu, et s'arrêter s'il tourne en rond.
 - **Panne du modèle** : un run qui échoue parce que le modèle ne répond pas n'est pas compté comme un échec. Le travail attend, le dot te prévient une fois, réessaie de plus en plus espacé (2, 4, 8 puis 15 min), et te prévient quand le modèle revient.
 - **`notify`** : le dot ne t'écrit de lui-même que s'il a du nouveau ou besoin de toi, sans limite de nombre. Un message qui redit la même chose qu'un message des 6 dernières heures n'est pas envoyé.
 

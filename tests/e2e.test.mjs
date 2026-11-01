@@ -4,7 +4,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -20,6 +20,7 @@ for (const d of [AGENT, WORKSPACE, join(MEMORY, "projets")]) mkdirSync(d, { recu
 
 // --- Faux serveur : garde chaque requête (modèle, messages de l'utilisateur), répond en flux ---
 const requests = [];
+let stubborn = 0;
 const server = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
@@ -27,9 +28,18 @@ const server = http.createServer((req, res) => {
     if (req.url.endsWith("/models")) return res.end(JSON.stringify({ data: [{ id: "modele-a" }, { id: "modele-b" }] }));
     const r = JSON.parse(body || "{}");
     const text = (m) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((c) => c.text ?? "").join(""));
-    requests.push({ model: r.model, users: (r.messages ?? []).filter((m) => m.role === "user").map(text) });
+    const users = (r.messages ?? []).filter((m) => m.role === "user").map(text);
+    requests.push({ model: r.model, users, all: (r.messages ?? []).map(text) });
     res.writeHead(200, { "content-type": "text/event-stream" });
     const chunk = (o) => res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 0, model: r.model, ...o })}\n\n`);
+    // Le todo « obstine » : un modèle qui s'acharne, une commande qui échoue chaque fois un peu différente.
+    if (users.some((u) => u.includes("Ton todo : obstine"))) {
+      stubborn += 1;
+      const call = { index: 0, id: `c${stubborn}`, type: "function", function: { name: "bash", arguments: JSON.stringify({ command: `ls /introuvable-${stubborn}` }) } };
+      chunk({ choices: [{ index: 0, delta: { role: "assistant", tool_calls: [call] }, finish_reason: null }] });
+      chunk({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 300, completion_tokens: 20, total_tokens: 320 } });
+      return res.end("data: [DONE]\n\n");
+    }
     chunk({ choices: [{ index: 0, delta: { role: "assistant", content: `réponse de ${r.model}` }, finish_reason: null }] });
     chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } });
     res.end("data: [DONE]\n\n");
@@ -57,6 +67,8 @@ async function startDot(dotModel) {
       DOT_TICK_MS: "500",
       DOT_REVIEW_DAYS: "0",
       DOT_MAX_RUNS: "1",
+      DOT_RUN_TOKENS: "1000",
+      DOT_FAIL_STREAK: "2",
       HTTP_PROXY: "",
       HTTPS_PROXY: "",
       http_proxy: "",
@@ -160,5 +172,19 @@ test("redémarrage avec un autre modèle : même conversation, même session de 
   const run = conversationRequests("Ton todo : t2")[0];
   assert.equal(run.model, "modele-b", "la session nommée du run ne garde pas son ancien modèle");
   assert.ok(run.users.some((u) => u.includes("Ton todo : t1")), "le run reprend la session de son objectif");
+  await stopDot();
+});
+
+test("un run qui s'acharne : point d'étape après les échecs, puis arrêt au plafond de jetons", { timeout: 120_000 }, async () => {
+  await startDot("modele-b");
+  writePlan(["obstine"]);
+  await until(() => readFileSync(join(MEMORY, "plan.json"), "utf8").includes('"waiting"'), 60_000, "le todo ne passe pas en attente");
+  const run = requests.filter((r) => r.users.some((u) => u.includes("Ton todo : obstine")));
+  assert.ok(run.some((r) => r.all.some((m) => m.includes("[dot:point d'étape]") && m.includes("ont échoué"))), "le point d'étape arrive au modèle après les échecs");
+  const logs = readdirSync(join(HOME, "logs")).map((f) => readFileSync(join(HOME, "logs", f), "utf8")).join("");
+  assert.match(logs, /"type":"run.capped"/);
+  assert.ok(run.length < 8, `le run est arrêté tôt (${run.length} requêtes)`);
+  const plan = JSON.parse(readFileSync(join(MEMORY, "plan.json"), "utf8"));
+  assert.match(plan.todos[0].reason, /plafond/);
   await stopDot();
 });

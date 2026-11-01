@@ -17,7 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 LOGS = Path(os.environ.get("DOT_STATE") or Path(__file__).resolve().parent.parent / "state") / "logs"
-PROBLEMS = {"telegram.conflict", "notify.blocked", "model.down", "model.up", "loop.suspect", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error"}
+PROBLEMS = {"telegram.conflict", "notify.blocked", "model.down", "model.up", "loop.suspect", "run.capped", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error"}
 
 
 def hour(iso: str) -> str:
@@ -66,6 +66,10 @@ def describe(e) -> str:
         return line
     if t == "loop.suspect":
         return f"⚠ BOUCLE {'arrêtée' if e.get('stopped') else 'probable'} après {duration(e.get('sinceStartS'))} : {e.get('call')} répété {e.get('repeat')}× · {short(e.get('label'), 60)}"
+    if t == "run.capped":
+        return f"⚠ PLAFOND : run arrêté à {e.get('tokens')} jetons ({e.get('turns')} tours) · {short(e.get('label'), 60)}"
+    if t == "run.checkpoint":
+        return f"· point d'étape ({e.get('reason')}, tour {e.get('turns')})" if not e.get("error") else f"· point d'étape impossible : {e.get('error')}"
     if t == "todo.stuck":
         return f"⚠ BLOQUÉ : todo {e.get('todo')} ({e.get('reason')})"
     if t == "plan.change":

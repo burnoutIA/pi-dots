@@ -159,7 +159,7 @@ try {
 } catch {}
 
 // --- Le journal : les problèmes des dernières 24 h ---
-const PROBLEMS = { "loop.suspect": "boucles", "todo.stuck": "todos bloqués", "model.down": "pannes du modèle", "pi.exit": "arrêts de pi", "net.denied": "refus du coffre", "heartbeat.error": "erreurs du battement", "notify.blocked": "messages bloqués", "telegram.conflict": "conflits Telegram (un autre programme lit le bot)", "oauth.error": "jetons non renouvelés" };
+const PROBLEMS = { "loop.suspect": "boucles", "run.capped": "runs arrêtés au plafond de jetons", "todo.stuck": "todos bloqués", "model.down": "pannes du modèle", "pi.exit": "arrêts de pi", "net.denied": "refus du coffre", "heartbeat.error": "erreurs du battement", "notify.blocked": "messages bloqués", "telegram.conflict": "conflits Telegram (un autre programme lit le bot)", "oauth.error": "jetons non renouvelés" };
 const since = Date.now() - DAYS * 24 * 3600_000;
 const counts = {};
 try {
