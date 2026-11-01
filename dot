@@ -142,6 +142,7 @@ start_vault() {
     -e "TZ=$(setting TZ)"
     -e "TELEGRAM_OWNER_ID=$(setting TELEGRAM_OWNER_ID)"
     -e "DOT_NAME=$NAME"
+    -e "VAULT_MODEL_SLOTS=$(setting DOT_MODEL_SLOTS)"
     --add-host host.docker.internal:host-gateway
     --entrypoint node
   )

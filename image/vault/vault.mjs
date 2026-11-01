@@ -31,6 +31,7 @@ import { join } from "node:path";
 import { Transform } from "node:stream";
 import { patchVault, readVault } from "../dotfile.mjs";
 import { readMail } from "./imap.mjs";
+import { createGate } from "./gate.mjs";
 
 const CONFIG_FILE = process.env.VAULT_CONFIG ?? "/vault/dot.dot";
 // Le même fichier, vu de la machine : pour dire à la personne où il est.
@@ -391,6 +392,13 @@ function reply(res, status, body) {
   res.end(typeof body === "string" ? `${body}\n` : JSON.stringify(body, null, 2));
 }
 
+const gate = createGate({
+  slots: Number(process.env.VAULT_MODEL_SLOTS || 1), // 0 : pas de file
+  graceMs: Number(process.env.VAULT_MODEL_GRACE_MS || 4000),
+  holdMs: Number(process.env.VAULT_MODEL_HOLD_MS || 15 * 60_000),
+  onHoldExpired: (role) => log("model.hold", { caller: role === "worker" ? "run" : "conversation", note: "appel trop long : sa place est rendue" }),
+});
+
 // Relais : /https/<serveur[:port]>/<chemin> — c'est là que les secrets sont remplacés.
 async function relay(req, res, scheme, rest, search) {
   const [hostPort, ...path] = rest;
@@ -409,6 +417,7 @@ async function relay(req, res, scheme, rest, search) {
   // Le corps n'est rempli que sur demande (en-tête x-vault-body: fill) : un appel au modèle transporte
   // la conversation, où {{NOM}} apparaît comme du texte, et ne doit jamais recevoir de valeur.
   delete headers["x-vault-body"];
+  delete headers["x-dot-role"];
   let body;
   const encode = req.headers["x-vault-body"] === "fill" ? bodyEncoder(req.headers["content-type"]) : null;
   if (encode && !READ_METHODS.has(String(req.method).toUpperCase())) {
@@ -431,6 +440,18 @@ async function relay(req, res, scheme, rest, search) {
   if (!used.size) log("net.out", { method: req.method, host, port, relay: true });
   // Une réponse compressée ne se relit pas : on la demande en clair dès qu'un secret est parti.
   if (used.size) headers["accept-encoding"] = "identity";
+
+  // Un appel au modèle (pi l'étiquette x-dot-role) attend son tour : un seul à la fois.
+  const role = req.headers["x-dot-role"];
+  if (role !== undefined && gate.enabled && !READ_METHODS.has(String(req.method).toUpperCase())) {
+    const caller = role === "worker" ? "run" : "conversation";
+    const { promise, cancel } = gate.acquire(role);
+    let turn = null;
+    res.on("close", () => (turn ? turn.release() : cancel()));
+    turn = await promise;
+    if (res.destroyed) return turn.release();
+    if (turn.waitedMs >= 1000) log("model.wait", { caller, waitedMs: turn.waitedMs, ahead: turn.ahead });
+  }
 
   forward(req, res, target, headers, address, {
     body,

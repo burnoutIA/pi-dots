@@ -66,6 +66,7 @@ RUN chmod +x /opt/dot/entrypoint.sh /opt/dot/run-pi.sh \
 ENV DOT_HOME=/dot \
     PI_CODING_AGENT_DIR=/dot/agent \
     PI_SKIP_VERSION_CHECK=1 \
+    DOT_ROLE=conversation \
     HOME=/home/node
 
 USER node

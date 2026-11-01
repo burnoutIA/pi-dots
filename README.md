@@ -142,6 +142,7 @@ Valeurs par défaut entre parenthèses :
 | `DOT_MEMORY`, `DOT_CPUS`, `DOT_PIDS` | plafonds du conteneur (8g, 4, 2048) |
 | `DOT_RECHECK_MINUTES` | un objectif dont le plan n'a rien changé n'est réexaminé qu'après ce délai (60) |
 | `DOT_RUN_MINUTES` | durée maximale d'un run de travail (30) |
+| `DOT_MODEL_SLOTS` | appels au modèle en même temps, par le coffre (1 ; 0 : pas de file) |
 | `DOT_RUN_TOKENS`, `DOT_CHECKPOINT_TURNS`, `DOT_FAIL_STREAK` | plafond de jetons d'un run (3 000 000), point d'étape tous les N tours (12) ou après N échecs d'outil d'affilée (4) |
 | `DOT_MAX_RUNS` | runs sur un même todo avant de demander de l'aide (3) |
 | `DOT_LOOP_REPEATS` | même appel d'outil répété dans un run : boucle, le run est arrêté (5) |
@@ -280,6 +281,7 @@ Toutes les 15 s, un battement lit le plan **sans passer par le modèle**. Il ne 
 
 - **Sessions** : chaque run est un pi lancé à part, dans la session de son objectif. Ta conversation avec le dot reste séparée et ne reçoit qu'un court compte-rendu par run.
 - **File** : un seul run à la fois, et seulement quand la conversation est inactive. Tes messages passent d'abord.
+- **Accès au modèle** : le coffre voit passer tous les appels au modèle et les fait passer un par un (`DOT_MODEL_SLOTS`), la conversation avant les runs. Juste après un appel de la conversation, un run attend quelques secondes : il ne s'intercale pas au milieu de ton tour. Un serveur local ne sert bien qu'un contexte à la fois ; deux appels en parallèle se disputent son cache et ralentissent tout. pi étiquette ses appels (en-tête `x-dot-role`, retiré par le coffre) ; la file vaut pour un dot, et c'est au serveur de modèles de départager plusieurs dots.
 - **Reprise** : un todo coupé par un arrêt est repris au démarrage ; une tâche planifiée échue pendant un arrêt est lancée au démarrage.
 - **Garde-fous** :
   - un todo non terminé après `DOT_MAX_RUNS` runs passe en attente, et le dot te demande de l'aide ;

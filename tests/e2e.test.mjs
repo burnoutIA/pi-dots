@@ -29,7 +29,7 @@ const server = http.createServer((req, res) => {
     const r = JSON.parse(body || "{}");
     const text = (m) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((c) => c.text ?? "").join(""));
     const users = (r.messages ?? []).filter((m) => m.role === "user").map(text);
-    requests.push({ model: r.model, users, all: (r.messages ?? []).map(text) });
+    requests.push({ model: r.model, role: req.headers["x-dot-role"], users, all: (r.messages ?? []).map(text) });
     res.writeHead(200, { "content-type": "text/event-stream" });
     const chunk = (o) => res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 0, model: r.model, ...o })}\n\n`);
     // Le todo « obstine » : un modèle qui s'acharne, une commande qui échoue chaque fois un peu différente.
@@ -51,7 +51,7 @@ const model = (id) => ({ id, name: id, reasoning: false, input: ["text"], contex
 // --- Le dot : ce que fait son démarrage (réglages, models.json), puis le hub ---
 let hub;
 async function startDot(dotModel) {
-  writeFileSync(join(AGENT, "models.json"), JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api: "openai-completions", apiKey: "x", models: [model("modele-a"), model("modele-b")] } } }));
+  writeFileSync(join(AGENT, "models.json"), JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, api: "openai-completions", apiKey: "x", headers: { "x-dot-role": "${DOT_ROLE}" }, models: [model("modele-a"), model("modele-b")] } } }));
   // Comme entrypoint.sh : le défaut des réglages suit DOT_MODEL.
   writeFileSync(join(AGENT, "settings.json"), JSON.stringify({ defaultProvider: "fake", defaultModel: dotModel, quietStartup: "header" }));
   hub = spawn(process.execPath, [`${src}/hub.mjs`], {
@@ -69,6 +69,7 @@ async function startDot(dotModel) {
       DOT_MAX_RUNS: "1",
       DOT_RUN_TOKENS: "1000",
       DOT_FAIL_STREAK: "2",
+      DOT_ROLE: "conversation",
       HTTP_PROXY: "",
       HTTPS_PROXY: "",
       http_proxy: "",
@@ -143,6 +144,9 @@ test("premier démarrage : la conversation et un run utilisent le modèle du .do
   writePlan(["t1"]);
   await until(() => conversationRequests("Ton todo : t1").length, 60_000, "le run du todo t1 n'a pas eu lieu");
   assert.equal(conversationRequests("Ton todo : t1")[0].model, "modele-a");
+  // L'étiquette que le coffre lit pour la file d'attente : pi la remplit d'après DOT_ROLE.
+  assert.equal(conversationRequests("bonjour 1").at(-1).role, "conversation");
+  assert.equal(conversationRequests("Ton todo : t1")[0].role, "worker");
   await until(() => !state().running, 30_000, "le run ne se termine pas");
   await stopDot();
 });

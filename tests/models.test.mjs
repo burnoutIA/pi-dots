@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 
 const src = process.env.DOT_SRC ?? "/src";
-const { discover } = await import(`${src}/discover-models.mjs`);
+const { discover, tagRole } = await import(`${src}/discover-models.mjs`);
 
 let auth = null;
 const server = http.createServer((req, res) => {
@@ -48,4 +48,18 @@ test("serveur indisponible ou discover: false : la liste déclarée reste", asyn
   assert.deepEqual(await discover(off), []);
   assert.equal(off.providers.local.models.length, 1);
   assert.equal("discover" in off.providers.local, false, "l'option du dot ne part pas chez pi");
+});
+
+test("les fournisseurs qui passent par le coffre portent le rôle de l'appelant", () => {
+  const config = {
+    providers: {
+      local: { baseUrl: "http://dot-vault:8080/http/host.docker.internal:4747/v1", models: [] },
+      perso: { baseUrl: "http://dot-vault:8080/https/api.example.com/v1", headers: { "x-dot-role": "fixe", "x-autre": "1" }, models: [] },
+      ailleurs: { baseUrl: "https://api.example.com/v1", models: [] },
+    },
+  };
+  tagRole(config, "http://dot-vault:8080");
+  assert.deepEqual(config.providers.local.headers, { "x-dot-role": "${DOT_ROLE}" });
+  assert.deepEqual(config.providers.perso.headers, { "x-dot-role": "fixe", "x-autre": "1" }, "un en-tête déclaré à la main est gardé");
+  assert.equal(config.providers.ailleurs.headers, undefined);
 });

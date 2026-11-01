@@ -2,7 +2,7 @@
 //
 // Le dot tourne dans deux rôles :
 //
-//   - la conversation (le pi de tmux, DOT_ROLE vide) : il parle avec la personne et fait battre le
+//   - la conversation (le pi de tmux, DOT_ROLE=conversation) : il parle avec la personne et fait battre le
 //     cœur. Le battement (toutes les 15 s, sans modèle) lit le plan et les événements ; quand il y a
 //     quelque chose à faire, il lance un run de travail ;
 //   - un run de travail (DOT_ROLE=worker) : un pi lancé à part, dans la session de l'objectif

@@ -70,6 +70,10 @@ def describe(e) -> str:
         return f"⚠ PLAFOND : run arrêté à {e.get('tokens')} jetons ({e.get('turns')} tours) · {short(e.get('label'), 60)}"
     if t == "run.checkpoint":
         return f"· point d'étape ({e.get('reason')}, tour {e.get('turns')})" if not e.get("error") else f"· point d'étape impossible : {e.get('error')}"
+    if t == "model.wait":
+        return f"· {'la conversation' if e.get('caller') == 'conversation' else 'un run'} attend le modèle {duration(round(e.get('waitedMs', 0) / 1000))}"
+    if t == "model.hold":
+        return f"⚠ appel au modèle trop long ({e.get('caller')}) : sa place dans la file est rendue"
     if t == "todo.stuck":
         return f"⚠ BLOQUÉ : todo {e.get('todo')} ({e.get('reason')})"
     if t == "plan.change":

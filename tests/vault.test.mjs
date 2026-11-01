@@ -19,10 +19,19 @@ const OWNER = 42;
 let servicePort;
 // seen : ce que le service a vraiment reçu ; la réponse, elle, repasse par le masquage du coffre.
 let seen;
+// Les appels « lents » (un modèle qui génère) : combien en même temps, au plus.
+const slow = { now: 0, max: 0, roles: [] };
 const service = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
-  req.on("end", () => {
+  req.on("end", async () => {
+    if (req.url.startsWith("/slow")) {
+      slow.roles.push(req.headers["x-dot-role"] ?? null);
+      slow.now += 1;
+      slow.max = Math.max(slow.max, slow.now);
+      await new Promise((r) => setTimeout(r, 150));
+      slow.now -= 1;
+    }
     seen = { method: req.method, url: req.url, auth: req.headers.authorization ?? null, body };
     res.setHeader("x-echo-url", req.url);
     res.end(JSON.stringify(seen));
@@ -58,7 +67,7 @@ const listen = (server) => new Promise((r) => server.listen(0, "127.0.0.1", () =
 
 const startVault = () =>
   spawn(process.execPath, [`${src}/vault/vault.mjs`], {
-    env: { ...process.env, VAULT_CONFIG: CONFIG, VAULT_LOGS: join(dir, "logs"), VAULT_INBOX: INBOX, VAULT_PORT: String(vaultPort), TELEGRAM_OWNER_ID: String(OWNER), VAULT_TELEGRAM_API: `http://127.0.0.1:${telegramPort}`, VAULT_ADMIN_PORT: String(adminPort), DOT_NAME: "test", DOT_FILE: "/home/moi/dots/test/test.dot", VAULT_RELOAD_MS: "100" },
+    env: { ...process.env, VAULT_CONFIG: CONFIG, VAULT_LOGS: join(dir, "logs"), VAULT_INBOX: INBOX, VAULT_PORT: String(vaultPort), TELEGRAM_OWNER_ID: String(OWNER), VAULT_TELEGRAM_API: `http://127.0.0.1:${telegramPort}`, VAULT_ADMIN_PORT: String(adminPort), DOT_NAME: "test", DOT_FILE: "/home/moi/dots/test/test.dot", VAULT_RELOAD_MS: "100", VAULT_MODEL_GRACE_MS: "100" },
     stdio: "ignore",
   });
 async function waitVault() {
@@ -120,6 +129,16 @@ test("les marqueurs sont remplacés dans un corps JSON ou formulaire, échappés
   assert.equal(new URLSearchParams(seen.body).get("p"), 'a"b\\c&d=e');
   await call(svc("/up"), { method: "POST", headers: { "content-type": "application/octet-stream", "x-vault-body": "fill", authorization: "Bearer {{KEY}}" }, body: "{{KEY}}" }).then((r) => r.text());
   assert.equal(seen.body, "{{KEY}}"); // binaire : jamais touché
+});
+
+test("les appels au modèle passent un par un ; les autres requêtes ne font pas la queue", async () => {
+  const model = (role) => call(svc("/slow/v1/chat/completions"), { method: "POST", headers: { authorization: "Bearer {{KEY}}", "x-dot-role": role }, body: "{}" }).then((r) => r.text());
+  await Promise.all([model("worker"), model("conversation"), model("worker")]);
+  assert.equal(slow.max, 1, "jamais deux appels au modèle en même temps");
+  assert.deepEqual(slow.roles, [null, null, null], "l'étiquette ne sort pas du coffre");
+  slow.max = 0;
+  await Promise.all([call(svc("/slow/a"), { headers: { authorization: "Bearer {{KEY}}" } }), call(svc("/slow/b"), { headers: { authorization: "Bearer {{KEY}}" } })]);
+  assert.equal(slow.max, 2, "une requête ordinaire n'attend pas");
 });
 
 test("un serveur qui renvoie ce qu'il reçoit ne fait pas sortir les secrets", async () => {

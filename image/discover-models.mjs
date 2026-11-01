@@ -31,6 +31,18 @@ function describe(entry, template = {}) {
   };
 }
 
+// Les appels au modèle qui passent par le coffre portent le rôle de l'appelant (DOT_ROLE : vide pour la
+// conversation, « worker » pour un run) : le coffre les met en file, la conversation d'abord. pi remplace
+// ${NOM} dans les en-têtes de models.json au moment de chaque appel.
+export function tagRole(config, vault = process.env.DOT_VAULT ?? "http://dot-vault:8080") {
+  const prefix = vault.replace(/\/$/, "") + "/";
+  for (const provider of Object.values(config.providers ?? {})) {
+    if (!String(provider.baseUrl ?? "").startsWith(prefix)) continue;
+    provider.headers = { "x-dot-role": "${DOT_ROLE}", ...(provider.headers ?? {}) };
+  }
+  return config;
+}
+
 export async function discover(config, fetchImpl = fetch) {
   const report = [];
   for (const [name, provider] of Object.entries(config.providers ?? {})) {
@@ -60,6 +72,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const file = process.argv[2];
   const config = JSON.parse(readFileSync(file, "utf8"));
   const report = await discover(config);
+  tagRole(config);
   writeFileSync(file, JSON.stringify(config, null, 2) + "\n");
   for (const r of report) {
     console.log(r.error ? `modèles ${r.provider} : liste du serveur indisponible (${r.error}), ${r.declared} déclaré(s) gardé(s)` : `modèles ${r.provider} : ${r.declared} déclaré(s) + ${r.added} trouvé(s) sur le serveur`);
