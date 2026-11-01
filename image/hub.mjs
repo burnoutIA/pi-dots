@@ -3,7 +3,7 @@
 // Utilisé quand DOT_INTERFACE=rpc (à la place du terminal tmux). Le protocole est celui de
 // `pi --mode rpc`, inchangé : un client qui sait piloter pi en RPC sait piloter un dot.
 //
-//   - pi est lancé (`pi --mode rpc --continue`) et relancé s'il s'arrête ;
+//   - pi est lancé (`pi --mode rpc`, sur la dernière session de la conversation) et relancé s'il s'arrête ;
 //   - plusieurs clients peuvent se connecter au socket en même temps ;
 //   - une commande d'un client est renumérotée : sa réponse ne revient qu'à lui ;
 //   - les événements (texte, outils, runs) sont diffusés à tous les clients ;
@@ -11,7 +11,7 @@
 //     l'emporte ; sans client, le hub répond « annulé » pour que pi ne reste jamais bloqué.
 
 import { spawn } from "node:child_process";
-import { appendFileSync, chmodSync, mkdirSync, rmSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import net from "node:net";
 import { dirname, join } from "node:path";
 
@@ -19,7 +19,22 @@ const HOME = process.env.DOT_HOME ?? "/dot";
 const SOCKET = process.env.HUB_SOCKET ?? join(HOME, "channel", "rpc.sock");
 // Les extensions du dépôt arrivent en options (-e …), préparées par le démarrage du dot.
 const EXTENSIONS = (process.env.DOT_PI_EXTENSIONS ?? "").trim().split(/\s+/).filter(Boolean);
-const PI_CMD = process.env.HUB_PI_CMD ? JSON.parse(process.env.HUB_PI_CMD) : ["pi", ...EXTENSIONS, "--mode", "rpc", "--continue"];
+const PI_CMD = process.env.HUB_PI_CMD ? JSON.parse(process.env.HUB_PI_CMD) : ["pi", ...EXTENSIONS, "--mode", "rpc"];
+const SESSIONS = join(process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent"), "sessions", "--dot-workspace--");
+
+// La dernière session de la conversation. Pas `pi --continue` : il reprend la session la plus
+// récente du dossier, souvent celle d'un run autonome (ids en dot-…), et la conversation travaillerait
+// alors dans le fil du run, en même temps que lui.
+function conversationSession() {
+  try {
+    return readdirSync(SESSIONS)
+      .filter((f) => f.endsWith(".jsonl") && !/_dot-[^/]*\.jsonl$/.test(f))
+      .map((f) => ({ f: join(SESSIONS, f), t: statSync(join(SESSIONS, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t)[0]?.f;
+  } catch {
+    return undefined;
+  }
+}
 const CWD = process.env.HUB_CWD ?? join(HOME, "workspace");
 const LOGS = join(HOME, "logs");
 const DIALOGS = new Set(["select", "confirm", "input", "editor"]);
@@ -62,9 +77,10 @@ let pi = null;
 const answeredUi = new Set(); // demandes à l'interface déjà tranchées
 
 function startPi() {
-  pi = spawn(PI_CMD[0], PI_CMD.slice(1), { cwd: CWD, env: process.env, stdio: ["pipe", "pipe", "inherit"] });
+  const session = process.env.HUB_PI_CMD ? undefined : conversationSession();
+  pi = spawn(PI_CMD[0], [...PI_CMD.slice(1), ...(session ? ["--session", session] : [])], { cwd: CWD, env: process.env, stdio: ["pipe", "pipe", "inherit"] });
   const started = Date.now();
-  log("hub.pi.start", { pid: pi.pid });
+  log("hub.pi.start", { pid: pi.pid, session });
   pi.stdout.on(
     "data",
     lines((line) => {

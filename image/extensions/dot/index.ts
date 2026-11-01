@@ -61,6 +61,7 @@ interface State {
   modelDown?: { since: string; tries: number; error: string }; // le modèle ne répond plus
   nextReview?: string; // prochaine revue de budget
   projectsMigrated?: boolean; // la mémoire a été répartie en notes par projet
+  appliedModel?: string; // dernier DOT_MODEL imposé à la conversation reprise
 }
 interface Watch { id: string; command: string; every: number; prompt: string; paused?: boolean; hash?: string; output?: string; nextCheck: string }
 
@@ -80,6 +81,30 @@ function writeJson(file: string, value: unknown) {
   renameSync(tmp, file);
 }
 const loadState = (): State => ({ events: [], ...readJson<Partial<State>>(STATE_FILE, {}) }) as State;
+// pi --continue reprend la conversation avec le modèle qu'elle avait, pas le défaut des réglages :
+// un DOT_MODEL changé dans le .dot est donc imposé une fois (un /model ultérieur reste respecté).
+// (Les runs autonomes, eux, reçoivent DOT_MODEL en option : voir runWorker.)
+function applyDotModel(pi: ExtensionAPI, context: any) {
+  const id = process.env.DOT_MODEL;
+  if (!id || loadState().appliedModel === id) return;
+  const provider = process.env.DOT_PROVIDER ?? context.model?.provider;
+  const model = provider ? context.modelRegistry?.find(provider, id) : undefined;
+  if (!model) return log("model.apply", { model: id, error: "modèle inconnu" });
+  const done = () => changeState((s) => (s.appliedModel = id));
+  if (context.model?.id === id && context.model?.provider === model.provider) return done();
+  pi.setModel(model).then((ok: boolean) => {
+    log("model.apply", { model: id, from: context.model?.id, ok });
+    if (ok) done();
+  });
+}
+// La section mcp_servers de pi liste comme « non déclaré, à charger avec tool_search » tout serveur
+// qui a des outils deferred, même quand d'autres de ses outils sont déjà déclarés. Les modèles en
+// concluent que ces outils manquent (tool_search ne renvoie pas un outil déjà chargé) : on les nomme.
+function mcpDirectSection(pi: ExtensionAPI): string {
+  const direct = ((pi as any).getActiveTools?.() ?? []).filter((name: string) => name.startsWith("mcp__"));
+  if (!direct.length) return "";
+  return `These MCP tools are already declared to you: call them directly, without tool_search (which never returns a tool that is already loaded): ${direct.join(", ")}. Only the other tools of these servers need tool_search.`;
+}
 function changeState(change: (s: State) => void) {
   const state = loadState();
   change(state);
@@ -129,6 +154,7 @@ interface Shared {
   reply?: (text: string) => void; // posé par le canal qui a lancé une commande du dot
   lastCtx?: any;
   tickTimer?: ReturnType<typeof setInterval>;
+  running?: boolean; // un run tourne : survit au rechargement des extensions, comme le run lui-même
 }
 
 // Une commande proposée à la personne sur ses canaux. `run` : instantanée, sans le modèle.
@@ -238,7 +264,9 @@ function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
     const live: any = { status: "running", label: info.label, kind: info.kind, started: new Date(started).toISOString(), turns: 0, tokens: 0, steps: [] };
     writeLive(LIVE_FILE, live);
     const extensions = (process.env.DOT_PI_EXTENSIONS ?? "").trim().split(/\s+/).filter(Boolean);
-    const child = spawn("pi", [...extensions, "-p", "--mode", "json", "--session-id", info.session, "--", prompt], {
+    // La session nommée garde son ancien modèle : celui du .dot est passé explicitement.
+    const model = [...(process.env.DOT_PROVIDER ? ["--provider", process.env.DOT_PROVIDER] : []), ...(process.env.DOT_MODEL ? ["--model", process.env.DOT_MODEL] : [])];
+    const child = spawn("pi", [...extensions, ...model, "-p", "--mode", "json", "--session-id", info.session, "--", prompt], {
       cwd: WORKSPACE,
       env: { ...process.env, DOT_ROLE: "worker", DOT_OBJECTIVE: info.objective ?? "" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -397,6 +425,9 @@ export default function (pi: ExtensionAPI) {
           }
         : {}),
     };
+    // Lue quand pi assemble le prompt, après tous les gestionnaires : celui de pi qui attend la
+    // connexion des serveurs MCP passe après celui-ci, leurs outils ne sont pas encore là.
+    Object.defineProperty(event.systemPromptOptions.sections, "dot_mcp_direct", { enumerable: true, configurable: true, get: () => mcpDirectSection(pi) });
   });
 
   registerTools(pi);
@@ -406,7 +437,6 @@ export default function (pi: ExtensionAPI) {
 
   let ctx: any = null;
   let timer: ReturnType<typeof setInterval> | null = null;
-  let running = false;
   const checking = new Set<string>();
 
   const enqueue = (kind: Kind, text: string, detail: Record<string, unknown> = {}) => {
@@ -483,7 +513,7 @@ export default function (pi: ExtensionAPI) {
     if (Date.now() - lastResourcesCheck < 30_000) return;
     lastResourcesCheck = Date.now();
     const now = resourcesFingerprint();
-    if (now === resourcesPrint || running || ctx?.isIdle?.() !== true) return;
+    if (now === resourcesPrint || shared.running || ctx?.isIdle?.() !== true) return;
     resourcesPrint = now;
     log("resources.changed");
     try {
@@ -688,16 +718,16 @@ export default function (pi: ExtensionAPI) {
     watchResources();
 
     const state = loadState();
-    if (running || state.paused) return;
+    if (shared.running || state.paused) return;
     if (state.backoffUntil && new Date(state.backoffUntil) > at) return;
     if (ctx?.isIdle?.() !== true) return; // la personne d'abord
-    running = true;
+    shared.running = true;
     work()
       .catch((error) => {
         log("heartbeat.error", { error: String(error?.stack ?? error).slice(0, 1000) });
         report("erreur du battement", String(error?.message ?? error));
       })
-      .finally(() => (running = false));
+      .finally(() => (shared.running = false));
   }
 
   pi.on("session_start", (_event, context: any) => {
@@ -705,10 +735,15 @@ export default function (pi: ExtensionAPI) {
     mkdirSync(INBOX, { recursive: true });
     pruneLogs();
     // Un run coupé par un arrêt : son todo est resté « en cours » et sera repris au premier battement.
+    // Après un simple rechargement des extensions, le run tourne toujours : rien n'est coupé.
     const state = loadState();
     const doing = readPlan().todos.filter((t) => t.status === "doing").map((t) => t.id);
-    log("conversation.start", { interrupted: state.running?.label, todosInProgress: doing.length ? doing : undefined, paused: state.paused || undefined });
-    changeState((s) => delete s.running);
+    if (shared.running) log("conversation.start", { runStillGoing: state.running?.label });
+    else {
+      log("conversation.start", { interrupted: state.running?.label, todosInProgress: doing.length ? doing : undefined, paused: state.paused || undefined });
+      changeState((s) => delete s.running);
+    }
+    applyDotModel(pi, context);
     // Un seul battement par processus, même après un rechargement des extensions.
     if (shared.tickTimer) clearInterval(shared.tickTimer);
     timer = shared.tickTimer = setInterval(tick, TICK_MS);
