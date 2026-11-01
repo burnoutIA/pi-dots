@@ -26,8 +26,9 @@ const require = createRequire(process.env.DOT_NODE_MODULES ?? "/usr/local/lib/no
 const YAML = require("yaml");
 
 const NAME = /^[a-z][a-z0-9-]{0,30}$/;
-// Ce qui ne doit jamais être dans env : le dot le verrait.
-const SECRET_LIKE = /(API_KEY|TOKEN|SECRET|PASSWORD)/;
+// Ce qui ne doit jamais être dans env : le dot le verrait. « TOKENS » au pluriel est un nombre de
+// jetons (DOT_RUN_TOKENS), pas un jeton d'accès.
+const SECRET_LIKE = /(API_KEY|TOKEN(?!S)|SECRET|PASSWORD)/;
 
 export function parse(text) {
   const docs = YAML.parseAllDocuments(text);

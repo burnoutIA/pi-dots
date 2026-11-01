@@ -51,6 +51,10 @@ test("extract refuse un secret dans env ou une clé en clair dans model", () => 
   const leak = join(dir, "fuite.dot");
   writeFileSync(leak, sample.replace("DOT_INTERFACE: rpc", "OPENAI_API_KEY: sk-oups"));
   assert.throws(() => lib.extract(leak, join(dir, "run2")), /ressemblent à des secrets/);
+  writeFileSync(leak, sample.replace("DOT_INTERFACE: rpc", "TELEGRAM_TOKEN: 123:abc"));
+  assert.throws(() => lib.extract(leak, join(dir, "run2b")), /ressemblent à des secrets/);
+  writeFileSync(leak, sample.replace("DOT_INTERFACE: rpc", "DOT_RUN_TOKENS: 3000000"));
+  lib.extract(leak, join(dir, "run2c")); // un nombre de jetons n'est pas un secret
   writeFileSync(leak, sample.replace('apiKey: "{{MODEL_KEY}}"', 'apiKey: "sk-abcdefghijklmnopqrstuvwxyz"'));
   assert.throws(() => lib.extract(leak, join(dir, "run3")), /clé d'API en clair/);
 });
