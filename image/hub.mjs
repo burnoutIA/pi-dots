@@ -11,7 +11,7 @@
 //     l'emporte ; sans client, le hub répond « annulé » pour que pi ne reste jamais bloqué.
 
 import { spawn } from "node:child_process";
-import { appendFileSync, chmodSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import net from "node:net";
 import { dirname, join } from "node:path";
 
@@ -20,22 +20,28 @@ const SOCKET = process.env.HUB_SOCKET ?? join(HOME, "channel", "rpc.sock");
 // Les extensions du dépôt arrivent en options (-e …), préparées par le démarrage du dot.
 const EXTENSIONS = (process.env.DOT_PI_EXTENSIONS ?? "").trim().split(/\s+/).filter(Boolean);
 const PI_CMD = process.env.HUB_PI_CMD ? JSON.parse(process.env.HUB_PI_CMD) : ["pi", ...EXTENSIONS, "--mode", "rpc"];
-const SESSIONS = join(process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent"), "sessions", "--dot-workspace--");
+const CWD = process.env.HUB_CWD ?? join(HOME, "workspace");
+const STATE = join(HOME, "memory", "state.json");
+// Le dossier où pi range les sessions d'un dossier de travail : son chemin, « / » remplacés par « - ».
+const SESSIONS = join(process.env.PI_CODING_AGENT_DIR ?? join(HOME, "agent"), "sessions", `--${CWD.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`);
 
-// La dernière session de la conversation. Pas `pi --continue` : il reprend la session la plus
-// récente du dossier, souvent celle d'un run autonome (ids en dot-…), et la conversation travaillerait
-// alors dans le fil du run, en même temps que lui.
-function conversationSession() {
+// La session de la conversation : celle que l'extension du dot a enregistrée dans son état. Pas
+// `pi --continue` : il reprend la session la plus récente du dossier, souvent celle d'un run autonome.
+// À défaut (premier démarrage, ancien état), la plus récente qui n'est pas celle d'un run.
+function conversationSession(stateFile = STATE, sessionsDir = SESSIONS) {
   try {
-    return readdirSync(SESSIONS)
+    const recorded = JSON.parse(readFileSync(stateFile, "utf8")).conversationSession;
+    if (recorded && existsSync(recorded)) return recorded;
+  } catch {}
+  try {
+    return readdirSync(sessionsDir)
       .filter((f) => f.endsWith(".jsonl") && !/_dot-[^/]*\.jsonl$/.test(f))
-      .map((f) => ({ f: join(SESSIONS, f), t: statSync(join(SESSIONS, f)).mtimeMs }))
+      .map((f) => ({ f: join(sessionsDir, f), t: statSync(join(sessionsDir, f)).mtimeMs }))
       .sort((a, b) => b.t - a.t)[0]?.f;
   } catch {
     return undefined;
   }
 }
-const CWD = process.env.HUB_CWD ?? join(HOME, "workspace");
 const LOGS = join(HOME, "logs");
 const DIALOGS = new Set(["select", "confirm", "input", "editor"]);
 

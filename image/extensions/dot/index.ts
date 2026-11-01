@@ -62,6 +62,7 @@ interface State {
   nextReview?: string; // prochaine revue de budget
   projectsMigrated?: boolean; // la mémoire a été répartie en notes par projet
   appliedModel?: string; // dernier DOT_MODEL imposé à la conversation reprise
+  conversationSession?: string; // le fichier de session de la conversation, que le hub reprend au redémarrage
 }
 interface Watch { id: string; command: string; every: number; prompt: string; paused?: boolean; hash?: string; output?: string; nextCheck: string }
 
@@ -744,6 +745,10 @@ export default function (pi: ExtensionAPI) {
       changeState((s) => delete s.running);
     }
     applyDotModel(pi, context);
+    // La session de la conversation, dite explicitement : au redémarrage, le hub la reprend telle
+    // quelle au lieu de deviner d'après les dates des fichiers.
+    const sessionFile = context.sessionManager?.getSessionFile?.();
+    if (sessionFile && loadState().conversationSession !== sessionFile) changeState((s) => (s.conversationSession = sessionFile));
     // Un seul battement par processus, même après un rechargement des extensions.
     if (shared.tickTimer) clearInterval(shared.tickTimer);
     timer = shared.tickTimer = setInterval(tick, TICK_MS);

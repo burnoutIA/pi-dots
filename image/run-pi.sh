@@ -10,7 +10,9 @@ SESSIONS="${PI_CODING_AGENT_DIR:-/dot/agent}/sessions/--dot-workspace--"
 
 while true; do
   started=$(date +%s)
-  session="$(ls -t "$SESSIONS"/*.jsonl 2>/dev/null | grep -v '_dot-[^/]*\.jsonl$' | head -1)"
+  # Celle que l'extension a enregistrée ; à défaut, la plus récente qui n'est pas celle d'un run.
+  session="$(jq -r '.conversationSession // empty' "${DOT_HOME:-/dot}/memory/state.json" 2>/dev/null)"
+  [ -n "$session" ] && [ -f "$session" ] || session="$(ls -t "$SESSIONS"/*.jsonl 2>/dev/null | grep -v '_dot-[^/]*\.jsonl$' | head -1)"
   pi $DOT_PI_EXTENSIONS ${session:+--session "$session"}
   code=$?
   dot_log "pi.exit" "\"code\":$code,\"uptimeS\":$(( $(date +%s) - started ))"
