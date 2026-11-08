@@ -170,7 +170,7 @@ Deux canaux, **une seule conversation** (même mémoire, même plan) : tu peux c
 
 **Depuis ta machine** : `./dot chat`. Si le dot est éteint, `./dot chat` et `./dot ask` proposent de l'allumer. Les messages passent par `state/channel/`. En plus des commandes du dot, le chat a les siennes : `/send fichier [message]`, `/secret`, `/allumer`, `/eteindre`, `/quit`.
 
-**Depuis Telegram** : un bot privé, qui n'écoute que toi (`TELEGRAM_OWNER_ID`).
+**Depuis Telegram** : un bot privé, qui n'écoute que toi (`TELEGRAM_OWNER_ID`). Ses réponses y sont mises en forme (titres, gras, listes, code, liens, tableaux).
 
 ### Les commandes : les mêmes partout, et elles évoluent avec le dot
 
@@ -332,16 +332,6 @@ Ce qui est noté :
 
 Le dot a le même diagnostic (outil `doctor`, sur une période réglable) pour se vérifier lui-même.
 
-## Tests
-
-`./dot test` lance les tests automatiques dans l'image, sur le code du dépôt (sans reconstruire) :
-- **le cœur** : plan, échéances, détection de panne du modèle, mémoire, skills mal formés, comptage d'usage et choix des outils déclarés ;
-- **le coffre de bout en bout**, avec un faux service et un faux Telegram : marqueurs, serveurs autorisés, lecture seule, adresses privées, demande de secret (notification Telegram sans aucune valeur, avec le fichier et la ligne à coller, conversation laissée au dot, réponse depuis la machine ou dans le fichier, annulation, élargissement, redémarrage), relecture du fichier modifié à la main ;
-- **le fichier `.dot`** : lecture, extraction de `env` et `model`, refus des secrets hors du vault, mise à jour du vault en gardant les commentaires, création et copie vierge ;
-- **le relais RPC** : plusieurs clients, réponses rendues au bon client, demandes à l'interface.
-
-Pas encore testés automatiquement : la lecture IMAP, les runs et le battement eux-mêmes.
-
 ## La vie du dot (`state/`)
 
 ```text
@@ -356,27 +346,3 @@ state/browser/     profil du navigateur
 ```
 
 Supprimer `state/` remet le dot à zéro, en gardant ses accès, ses skills et ses extensions.
-
-## Structure du dépôt
-
-```text
-Containerfile                   l'image : OS, outils, pi, navigateur, ketch, ctx-optimizer
-dot                             toutes les commandes
-image/entrypoint.sh             démarrage : config de pi depuis env, pi dans tmux ou derrière le relais RPC
-image/dotfile.mjs               le fichier .dot : lecture, extraction de env et model, mise à jour du vault
-image/defaults/                 consignes du dot, serveurs MCP, modèles de mémoire
-image/extensions/dot/           autonomie : plan, battement, runs, schedule, watch, mémoire, budget, doctor, secret
-image/extensions/dot-telegram/  canal Telegram (via le coffre)
-image/extensions/dot-local/     canal local (state/channel)
-image/vault/                    le coffre : proxy filtré, secrets remplacés au passage, demandes, IMAP
-image/doctor.mjs                diagnostic, côté dot
-tools/chat.py                   le canal local, côté machine (chat, ask, send, secret, livrables)
-tools/veilleur.py               le veilleur, un pour tous les dots (allumer / éteindre depuis Telegram)
-tools/suivre.py                 le run en cours, en direct
-tools/journal.py                lecture du journal
-image/hub.mjs                   le relais RPC (interface rpc)
-tools/rpc.py                    le connecteur RPC, côté machine
-integrations/pi-skill-dots/     skill d'exemple : faire gérer des dots par un autre agent pi
-tests/                          tests automatiques
-.vscode/settings.json           VS Code ouvre les fichiers .dot comme du YAML
-```
