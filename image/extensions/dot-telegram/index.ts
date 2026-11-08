@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
 import { log } from "../dot/log.ts";
+import { markdownToHtml, splitMessage } from "./markdown.ts";
 
 interface Attachment {
   id: string;
@@ -121,11 +122,21 @@ export default function (pi: ExtensionAPI) {
 
   const chatId = () => shared.chat || OWNER;
 
+  // Le markdown de l'agent part converti en HTML de Telegram. Si Telegram le refuse (une balise
+  // qu'il n'accepte pas, un message devenu trop long), le même morceau repart en texte brut :
+  // moins joli, mais jamais perdu.
   let sendQueue: Promise<unknown> = Promise.resolve();
   function sendText(chat: number, text: string) {
-    for (let i = 0; i < text.length; i += 4000) {
-      const part = text.slice(i, i + 4000);
-      sendQueue = sendQueue.then(() => tg("sendMessage", { chat_id: chat, text: part, disable_web_page_preview: true }).catch(() => {}));
+    for (const part of splitMessage(text)) {
+      sendQueue = sendQueue.then(async () => {
+        const plain = { chat_id: chat, text: part, disable_web_page_preview: true };
+        try {
+          await tg("sendMessage", { ...plain, text: markdownToHtml(part), parse_mode: "HTML" });
+        } catch (error: any) {
+          log("telegram.html_refused", { error: String(error?.message).slice(0, 200) });
+          await tg("sendMessage", plain).catch(() => {});
+        }
+      });
     }
   }
   (dot.senders ??= {}).telegram = (text: string) => sendText(chatId(), text);
