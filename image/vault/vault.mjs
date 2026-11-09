@@ -27,17 +27,20 @@ import { randomBytes } from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Transform } from "node:stream";
 import { patchVault, readVault } from "../dotfile.mjs";
 import { readMail } from "./imap.mjs";
 import { createGate } from "./gate.mjs";
+import { createQuarantine } from "./quarantine.mjs";
 
 const CONFIG_FILE = process.env.VAULT_CONFIG ?? "/vault/dot.dot";
 // Le même fichier, vu de la machine : pour dire à la personne où il est.
 const DOT_FILE = process.env.DOT_FILE ?? "";
 const LOGS = process.env.VAULT_LOGS ?? "/logs";
 const INBOX = process.env.VAULT_INBOX ?? "/inbox";
+// La quarantaine des sessions exposées : à la racine du dossier du dot, hors de portée du dot.
+const QUARANTINE = process.env.VAULT_QUARANTINE ?? join(dirname(CONFIG_FILE), ".quarantaine");
 const PORT = Number(process.env.VAULT_PORT ?? 8080);
 const OWNER = Number(process.env.TELEGRAM_OWNER_ID);
 const TELEGRAM_SECRET = "TELEGRAM_TOKEN";
@@ -67,6 +70,7 @@ function log(type, data = {}) {
 // --- Les secrets ----------------------------------------------------------------------------------
 
 let vault = { secrets: {}, allow: [] };
+const quarantine = createQuarantine(QUARANTINE);
 
 // Les secrets vivent dans le nœud `vault` du fichier du dot (<nom>.dot) ; le coffre est le seul à le lire.
 // Lit et vérifie ce nœud ; une erreur dit ce qui ne va pas.
@@ -688,6 +692,28 @@ async function control(req, res, path) {
     return startRequest(res, { type: "values", fields, index: 0, values: {}, hosts, readOnly: body.readOnly !== false, purpose });
   }
   if (req.method === "POST" && path === "mail") return mail(req, res);
+  // Injections (extension dot) : une session exposée, et ce qu'elle voulait changer dans le dot.
+  if (req.method === "POST" && (path === "exposed" || path === "held")) {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch {
+      return reply(res, 400, "corps JSON attendu");
+    }
+    try {
+      if (path === "exposed") {
+        const e = quarantine.expose(body);
+        log("injection.exposed", { session: e.session, by: e.role, tool: e.tool, level: e.level, excerpt: e.excerpt });
+        return reply(res, 200, { ok: true });
+      }
+      const e = quarantine.hold(body);
+      log("injection.held", { id: e.id, session: e.session, by: e.role, tool: e.tool, input: JSON.stringify(e.input).slice(0, 200) });
+      return reply(res, 200, { id: e.id });
+    } catch (error) {
+      return reply(res, error.status ?? 500, error.message);
+    }
+  }
+  if (req.method === "GET" && path === "held") return reply(res, 200, { held: quarantine.list() });
   return reply(res, 404, "GET /_vault/secrets, POST /_vault/request, POST /_vault/extend, POST /_vault/mail");
 }
 

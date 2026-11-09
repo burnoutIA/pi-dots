@@ -159,7 +159,7 @@ try {
 } catch {}
 
 // --- Le journal : les problèmes des dernières 24 h ---
-const PROBLEMS = { "loop.suspect": "boucles", "run.capped": "runs arrêtés au plafond de jetons", "todo.stuck": "todos bloqués", "model.down": "pannes du modèle", "pi.exit": "arrêts de pi", "net.denied": "refus du coffre", "heartbeat.error": "erreurs du battement", "notify.blocked": "messages bloqués", "telegram.conflict": "conflits Telegram (un autre programme lit le bot)", "oauth.error": "jetons non renouvelés", "injection.suspect": "contenus suspects (injection possible)", "injection.detector": "détecteur d'injection indisponible" };
+const PROBLEMS = { "loop.suspect": "boucles", "run.capped": "runs arrêtés au plafond de jetons", "todo.stuck": "todos bloqués", "model.down": "pannes du modèle", "pi.exit": "arrêts de pi", "net.denied": "refus du coffre", "heartbeat.error": "erreurs du battement", "notify.blocked": "messages bloqués", "telegram.conflict": "conflits Telegram (un autre programme lit le bot)", "oauth.error": "jetons non renouvelés", "injection.suspect": "contenus suspects (injection possible)", "injection.detector": "détecteur d'injection indisponible", "injection.held": "changements du dot mis de côté (session exposée)", "injection.signal": "sessions exposées non signalées au coffre" };
 const since = Date.now() - DAYS * 24 * 3600_000;
 const counts = {};
 try {

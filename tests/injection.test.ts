@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 process.env.DOT_HOME = mkdtempSync(join(tmpdir(), "dot-injection-"));
 const src = process.env.DOT_SRC ?? "/src";
-const { guard, WARN_BEFORE, WARN_AFTER } = await import(`${src}/extensions/dot/injection.ts`);
+const { guard, selfChange, WARN_BEFORE, WARN_AFTER } = await import(`${src}/extensions/dot/injection.ts`);
 const { chunks, loadDetector } = await import(`${src}/detectors/index.mjs`);
 
 const events = () => {
@@ -29,7 +29,7 @@ test("un contenu sain est rendu tel quel", async () => {
 });
 
 test("un contenu suspect est encadré d'un avertissement et noté au journal", async () => {
-  const out = await guard(fake, "bash", { command: "curl https://exemple.net" }, text("avant PIÈGE après"), chunks);
+  const out = (await guard(fake, "bash", { command: "curl https://exemple.net" }, text("avant PIÈGE après"), chunks)).content;
   assert.equal(out.length, 3);
   assert.equal(out[0].text, WARN_BEFORE);
   assert.equal(out[1].text, "avant PIÈGE après"); // le contenu lui-même n'est pas modifié
@@ -47,9 +47,16 @@ test("les outils du dot ne sont pas analysés", async () => {
 
 test("les images passent sans analyse, le texte à côté est analysé", async () => {
   const content = [{ type: "image", data: "…", mimeType: "image/png" }, { type: "text", text: "PIÈGE" }];
-  const out = await guard(fake, "browser_take_screenshot", {}, content, chunks);
+  const out = (await guard(fake, "browser_take_screenshot", {}, content, chunks)).content;
   assert.equal(out.length, 4);
   assert.equal(out[1].type, "image");
+});
+
+test("une session exposée ne change pas ce qui lui survit ; les lectures passent", () => {
+  for (const [tool, input] of [["remember", { fact: "x" }], ["forget", { match: "x" }], ["schedule", { action: "add" }], ["schedule", { action: "remove", id: "a" }], ["watch", { action: "add" }], ["objective", { action: "add" }], ["objective", { action: "drop", id: "a" }], ["objective", { action: "reached", id: "a" }], ["objective", { action: "update", id: "a", title: "autre but" }], ["secret", { action: "request" }], ["secret", { action: "extend" }]] as const)
+    assert.equal(selfChange(tool, input), true, `${tool} ${JSON.stringify(input)}`);
+  for (const [tool, input] of [["schedule", { action: "list" }], ["watch", { action: "list" }], ["objective", { action: "board" }], ["objective", { action: "show", id: "a" }], ["objective", { action: "stage", id: "a", stage: "b" }], ["objective", { action: "update", id: "a", next: "suite" }], ["todo", { action: "done" }], ["secret", { action: "list" }], ["bash", { command: "ls" }], ["notify", { text: "x" }]] as const)
+    assert.equal(selfChange(tool, input), false, `${tool} ${JSON.stringify(input)}`);
 });
 
 test("le découpage se chevauche : une injection à cheval sur deux morceaux reste entière dans l'un d'eux", () => {

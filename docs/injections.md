@@ -95,8 +95,8 @@ Ce que ça fait : arrêter les injections courantes, et surtout **les empêcher 
 
 ## Migration
 
-1. Defender dans l'image, analyse dans `tool_result`, avertissement et journal (`injection.suspect`, visible dans `journal -p` et `doctor`).
-2. Signal d'exposition de l'extension vers le coffre, et mise de côté des outils du dot (`tool_call`).
+1. ✅ Defender dans l'image, analyse dans `tool_result`, avertissement et journal (`injection.suspect`, visible dans `journal -p` et `doctor`).
+2. ✅ Signal d'exposition de l'extension vers le coffre (`POST /_vault/exposed`), et mise de côté des outils du dot (`tool_call`, `POST /_vault/held`).
 3. Empreintes de début et de fin de session, et quarantaine, tenues par le coffre : skills, extensions, mémoire, tâches planifiées, veilles et objectifs du plan.
 4. Proposition de ce qui a été mis de côté, dans la conversation.
 5. Mise à jour du README (ce que le dot fait d'un contenu suspect, et ce qui t'est proposé).

@@ -17,7 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 LOGS = Path(os.environ.get("DOT_STATE") or Path(__file__).resolve().parent.parent / "state") / "logs"
-PROBLEMS = {"telegram.conflict", "notify.blocked", "model.down", "model.up", "loop.suspect", "run.capped", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error", "injection.suspect", "injection.detector"}
+PROBLEMS = {"telegram.conflict", "notify.blocked", "model.down", "model.up", "loop.suspect", "run.capped", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error", "injection.suspect", "injection.detector", "injection.held", "injection.held.lost", "injection.signal"}
 
 
 def hour(iso: str) -> str:
@@ -103,6 +103,16 @@ def describe(e) -> str:
         return f"✉ coffre : mails lus ({e.get('action')} {e.get('folder', '')}, {e.get('count')}) sur {e.get('host')}"
     if t == "injection.suspect":
         return f"⚠ CONTENU SUSPECT ({e.get('level')}, {e.get('score')}) dans {e.get('tool')} : « {short(e.get('excerpt'), 100)} » · {short(e.get('source'), 80)}"
+    if t == "injection.exposed":
+        return f"⚠ session exposée ({e.get('by')}, {e.get('session')}) : ses changements du dot seront mis de côté"
+    if t == "injection.held":
+        return f"⏸ MIS DE CÔTÉ ({e.get('id')}) : {e.get('tool')} {short(e.get('input'), 120)}"
+    if t == "injection.held.lost":
+        return f"⏸ non fait (coffre injoignable, rien de gardé) : {e.get('tool')}"
+    if t == "injection.signal":
+        return f"⚠ le coffre n'a pas pu être prévenu d'une session exposée : {short(e.get('error'), 120)}"
+    if t == "injection.cleared":
+        return f"· nouvelle conversation : la session n'est plus exposée"
     if t == "injection.detector":
         return f"⚠ détecteur d'injection indisponible : {short(e.get('error'), 150)}"
     if t == "notify.blocked":
