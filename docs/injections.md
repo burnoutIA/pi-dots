@@ -90,9 +90,29 @@ Le coffre range la référence et la quarantaine à la racine du dossier du dot 
 
 Pendant une exposition, le coffre ne sait pas quelle session a écrit un fichier : un changement fait en même temps par une autre session, non exposée, est mis en quarantaine lui aussi. Ça n'arrive qu'après une alerte, et ce qui est mis de côté t'est proposé.
 
-**Ce qui est mis de côté t'est proposé** dans la conversation, avec ce qui a été lu de suspect : tu acceptes, et c'est appliqué, ou tu refuses, et c'est jeté. Ce qui n'a pas de réponse au bout de 7 jours est jeté.
+## 3. Une exposition ne se transmet pas à la session suivante
+
+Ce qu'une session exposée laisse derrière elle peut orienter les suivantes, qui, elles, ne sont pas exposées : un fichier déposé dans la boîte (qui déclenche un run), un événement écrit directement dans la file (`state.json`), un todo ajouté, la prochaine étape d'un objectif, et le contexte de sa session pi, que le run suivant sur le même objectif reprend. Sans parade, une injection passerait d'une session à l'autre et finirait chez une session libre de modifier le dot.
+
+- **Le coffre suit les origines** : chaque fichier de la boîte, événement en file, todo et objectif (titre, détail, prochaine étape, blocage) qui apparaît ou change pendant une exposition est marqué « venu d'une session exposée » (`.quarantaine/origins.json`). Un événement tiré d'un fichier marqué l'est aussi.
+- **Avant chaque run**, l'extension demande au coffre si ce qui le déclenche est marqué. Si oui, le run **démarre exposé**.
+- **Les vrais messages du coffre** (un accord, un secret enregistré) ne sont jamais marqués : le coffre sait lesquels il a déposés. Un faux message à son nom, déposé pendant une exposition, est marqué.
+- **Une session pi exposée est abandonnée** : le run suivant sur le même objectif repart dans une session neuve (`dot-objectif-x-2`…), sans le contenu suspect dans son contexte. Il garde le plan et les notes du projet ; il perd le fil de la session abandonnée.
+- **Le coffre injoignable** : un run démarre exposé.
+
+## 4. Ta décision
+
+Ce qui est mis de côté (appels d'outils et fichiers retirés) attend ta décision. Comme pour un secret, **tu décides depuis ta machine** : le chat local passe par des fichiers que le dot peut écrire, et la conversation Telegram est lue par le dot. Un « j'accepte » ne doit pas pouvoir être fabriqué par lui.
+
+- **Le coffre te prévient** sur Telegram, une fois par session exposée ; `./dot chat` le signale aussi.
+- **`./dot quarantaine`** (ou `/quarantaine` dans `./dot chat`) montre chaque changement : l'appel d'outil et ses arguments, ou les fichiers retirés et leur contenu, avec ce qui avait été lu de suspect. Tu acceptes, tu refuses, ou tu passes. La décision passe par la porte d'administration du coffre, que le dot ne peut pas joindre.
+- **Accepté** : un fichier retiré est remis en place par le coffre (après la fin de l'exposition, sinon le gardien le retirerait aussitôt) ; un appel d'outil est refait par le dot, dans une nouvelle session, sur un message du coffre.
+- **Refusé** : jeté. **Sans réponse au bout de 7 jours** : jeté.
 
 ## Ce que ça ne fait pas
+
+- **Tout ce qu'une session exposée écrit n'est pas suivi.** Un fichier de travail (`state/workspace/`), un livrable, une note qu'un run suivant relirait de lui-même peut encore porter une injection d'une session à l'autre. Sont suivis ce qui déclenche ou oriente un run (boîte, événements, todos, objectifs) et ce qui modifie le dot (skills, extensions, mémoire, tâches, veilles).
+- **Une fin de session peut être annoncée à tort.** Le dot peut joindre les routes du coffre : une session détournée, et soigneuse, pourrait annoncer sa propre fin. Pour un run, ça ne sert à rien avant `DOT_RUN_MINUTES` ; pour la conversation, elle redeviendrait libre.
 
 - **Ça n'arrête pas une attaque soignée.** Defender se contourne, comme tous les détecteurs. Une injection qu'il ne voit pas ne marque pas la session.
 - **Ça n'empêche pas une session détournée d'agir** avec ce qu'elle a le droit de faire pendant qu'elle tourne (faire sortir le contenu de tes mails, par exemple). La réponse reste les droits minimaux : des comptes à sa mesure, en lecture seule quand c'est possible.
@@ -104,5 +124,5 @@ Ce que ça fait : arrêter les injections courantes, et surtout **les empêcher 
 1. ✅ Defender dans l'image, analyse dans `tool_result`, avertissement et journal (`injection.suspect`, visible dans `journal -p` et `doctor`).
 2. ✅ Signal d'exposition de l'extension vers le coffre (`POST /_vault/exposed`), et mise de côté des outils du dot (`tool_call`, `POST /_vault/held`).
 3. ✅ Empreintes de début et de fin de session, et quarantaine, tenues par le coffre : skills, extensions, mémoire, tâches planifiées, veilles et objectifs du plan.
-4. Proposition de ce qui a été mis de côté, dans la conversation.
-5. Mise à jour du README (ce que le dot fait d'un contenu suspect, et ce qui t'est proposé).
+4. ✅ Origines suivies par le coffre et sessions pi abandonnées ; décision depuis la machine (`./dot quarantaine`), notification, expiration au bout de 7 jours.
+5. ✅ Mise à jour du README.

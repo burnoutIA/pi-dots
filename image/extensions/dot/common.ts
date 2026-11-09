@@ -41,7 +41,7 @@ export const LATE_SKIP_MS = 15 * 60_000;
 export const MAX_TEXT = 4000;
 
 export type Kind = "tâche" | "veille" | "boîte" | "revue";
-export interface DotEvent { id: string; kind: Kind; text: string; tries?: number }
+export interface DotEvent { id: string; kind: Kind; text: string; tries?: number; source?: string }
 export interface State {
   paused?: boolean;
   lastAlive?: string;

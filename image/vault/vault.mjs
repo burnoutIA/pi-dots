@@ -78,8 +78,51 @@ const guard = createGuard({
   root: dirname(CONFIG_FILE),
   qdir: QUARANTINE,
   runMinutes: () => Number(process.env.VAULT_RUN_MINUTES || 30),
-  log,
+  log: (type, data) => {
+    log(type, data);
+    if (type === "injection.reverted") heldNotice(data.sessions ?? []);
+  },
 });
+const HELD_DAYS = Number(process.env.VAULT_HELD_DAYS ?? 7);
+
+// La personne est prévenue une fois par session exposée qu'un changement attend sa décision. Elle
+// décide depuis sa machine : la conversation Telegram et le chat local passent par le dot.
+const noticed = new Set();
+function heldNotice(sessions) {
+  const fresh = sessions.filter((s) => !noticed.has(s));
+  if (sessions.length && !fresh.length) return;
+  for (const s of sessions) noticed.add(s);
+  notify(
+    `⏸ Le dot a lu un contenu qui ressemble à une injection. Les changements qu'il voulait ensuite faire sur lui-même (mémoire, skills, tâches, objectifs…) sont mis de côté : rien n'est appliqué.\n` +
+      `Pour les voir et décider, depuis ta machine : ./dot ${DOT_NAME ? `@${DOT_NAME} ` : ""}quarantaine (sans réponse, ils sont jetés au bout de ${HELD_DAYS} jours).`,
+  );
+}
+
+// Ta décision sur un changement mis de côté.
+async function decide(id, accept) {
+  const entry = quarantine.get(id);
+  if (!entry) throw Object.assign(new Error("Ce changement n'est plus en attente."), { status: 404 });
+  if (!accept) {
+    quarantine.remove(id);
+    log("injection.refused", { id });
+    return "Refusé : jeté.";
+  }
+  if (entry.kind === "fichiers") {
+    guard.restore(entry);
+    quarantine.remove(id);
+    log("injection.accepted", { id, kind: entry.kind });
+    return "Accepté : remis en place.";
+  }
+  // Un appel d'outil du dot : c'est le dot qui le refait, dans une nouvelle session, sur ton accord.
+  tellDot(
+    `accepte-${id}`,
+    `La personne a accepté un changement que tu voulais faire pendant une session exposée (mis de côté ${id}). ` +
+      `Fais-le maintenant, tel quel : outil \`${entry.tool}\`, arguments ${JSON.stringify(entry.input)}.`,
+  );
+  quarantine.remove(id);
+  log("injection.accepted", { id, tool: entry.tool });
+  return "Accepté : le dot va le faire.";
+}
 
 // Les secrets vivent dans le nœud `vault` du fichier du dot (<nom>.dot) ; le coffre est le seul à le lire.
 // Lit et vérifie ce nœud ; une erreur dit ce qui ne va pas.
@@ -550,6 +593,7 @@ function ask(resumed = false) {
 }
 
 function tellDot(id, text) {
+  guard.trust(`inbox:coffre-${id}.txt`); // un message du coffre n'est jamais pris pour celui d'une session exposée
   try {
     mkdirSync(INBOX, { recursive: true });
     writeFileSync(join(INBOX, `coffre-${id}.txt`), `[message du coffre, pas de la personne]\n${text}\n`);
@@ -713,11 +757,13 @@ async function control(req, res, path) {
       if (path === "exposed") {
         const e = quarantine.expose(body);
         guard.expose(e.session, e.role);
+        if (body.piSession) guard.poison(String(body.piSession).slice(0, 200));
         log("injection.exposed", { session: e.session, by: e.role, tool: e.tool, level: e.level, excerpt: e.excerpt });
         return reply(res, 200, { ok: true });
       }
       const e = quarantine.hold(body);
       log("injection.held", { id: e.id, session: e.session, by: e.role, tool: e.tool, input: JSON.stringify(e.input).slice(0, 200) });
+      heldNotice([e.session]);
       return reply(res, 200, { id: e.id });
     } catch (error) {
       return reply(res, error.status ?? 500, error.message);
@@ -736,7 +782,24 @@ async function control(req, res, path) {
     guard.end(String(body.session ?? ""));
     return reply(res, 200, { ok: true });
   }
-  if (req.method === "GET" && path === "exposure") return reply(res, 200, { open: guard.open() });
+  if (req.method === "GET" && path === "exposure") return reply(res, 200, { open: guard.open(), poisoned: guard.poisoned() });
+  // Ce qui oriente un run (fichier déposé, événement, todo, objectif) : venu d'une session exposée ?
+  if (req.method === "POST" && (path === "taint" || path === "taint/mark")) {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch {
+      return reply(res, 400, "corps JSON attendu");
+    }
+    const key = String(body.key ?? "");
+    if (!/^(inbox|event|todo|objective):[^/]{1,200}$/.test(key)) return reply(res, 400, "key : inbox:<fichier>, event:<id>, todo:<id> ou objective:<id>");
+    if (path === "taint/mark") {
+      guard.taint(key);
+      log("injection.tainted", { key });
+      return reply(res, 200, { tainted: true });
+    }
+    return reply(res, 200, { tainted: guard.tainted(key) });
+  }
   return reply(res, 404, "GET /_vault/secrets, POST /_vault/request, POST /_vault/extend, POST /_vault/mail");
 }
 
@@ -831,6 +894,10 @@ server.listen(PORT, "0.0.0.0", () => {
   if (pending) (expired() ? finish("expired") : ask(true)).catch(() => {});
 });
 setInterval(() => expired() && finish("expired").catch(() => {}), 60_000).unref();
+// Ce qui attend ta décision depuis trop longtemps est jeté.
+setInterval(() => {
+  for (const e of quarantine.expire(HELD_DAYS)) log("injection.expired", { id: e.id, tool: e.tool ?? e.kind });
+}, 3600_000).unref();
 // Le gardien : référence prise au démarrage, puis comparaison régulière.
 try {
   guard.start();
@@ -862,7 +929,17 @@ http
         const message = await answer(String(body.text ?? "").trim());
         return reply(res, 200, { message, pending: question() });
       }
-      return reply(res, 404, "GET /pending, POST /answer");
+      // Ce qui a été mis de côté pendant une session exposée, et ta décision.
+      if (req.method === "GET" && req.url === "/held") return reply(res, 200, { held: quarantine.list().map((e) => ({ ...e, files: quarantine.files(e) })), exposed: guard.open() });
+      if (req.method === "POST" && req.url === "/held/decide") {
+        const body = await readBody(req);
+        try {
+          return reply(res, 200, { message: await decide(String(body.id ?? ""), body.accept === true) });
+        } catch (error) {
+          return reply(res, error.status ?? 500, { message: error.message });
+        }
+      }
+      return reply(res, 404, "GET /pending, POST /answer, GET /held, POST /held/decide");
     } catch (error) {
       reply(res, 500, error.message);
     }

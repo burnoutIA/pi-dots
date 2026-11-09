@@ -13,6 +13,12 @@
 // fonctionnement normal (prochaine échéance, état d'une veille, avancement des todos) n'est pas
 // comparé, et un retrait n'est pas annulé : il ne peut pas installer d'instructions.
 //
+// Ce qui oriente le travail des sessions suivantes est suivi aussi : un fichier déposé dans la boîte,
+// un événement en file, un todo, la prochaine étape d'un objectif. Ce qui apparaît ou change pendant
+// une exposition est marqué « venu d'une session exposée » (origins.json) : un run qui en part
+// démarre exposé. Les messages que le coffre dépose lui-même ne sont jamais marqués. Et une session
+// pi qui a été exposée est abandonnée (poisoned) : le run suivant repart dans une session neuve.
+//
 // Une session exposée le reste jusqu'à sa fin annoncée par l'extension (un run qui s'arrête, la
 // conversation à /new) ; un run, au moins DOT_RUN_MINUTES après son exposition, pour qu'une fin
 // annoncée trop tôt ne serve à rien.
@@ -48,6 +54,58 @@ export function createGuard({ root, qdir, runMinutes = () => 30, log = () => {},
   // Index de la référence : chemin → { size, mtime, hash } ; reconstruit au démarrage.
   let index = new Map();
   let records = {};
+  // Origines : clé (inbox:<fichier>, event:<id>, todo:<id>, objective:<id>) → { hash, tainted, t, gone }.
+  const originsFile = join(qdir, "origins.json");
+  let origins = readJson(originsFile) ?? { items: {}, trusted: [], poisoned: [] };
+  const saveOrigins = () => {
+    mkdirSync(qdir, { recursive: true });
+    writeFileSync(originsFile, JSON.stringify(origins));
+  };
+
+  // Ce qui, sur le disque, oriente les sessions suivantes.
+  function sources() {
+    const out = new Map();
+    try {
+      for (const name of readdirSync(join(root, "state", "inbox"))) {
+        if (name.startsWith(".")) continue;
+        try {
+          const file = join(root, "state", "inbox", name);
+          if (statSync(file).isFile()) out.set(`inbox:${name}`, sha(readFileSync(file)));
+        } catch {}
+      }
+    } catch {}
+    for (const e of readJson(join(root, "state", "memory", "state.json"))?.events ?? []) out.set(`event:${e.id}`, sha(JSON.stringify([e.text, e.source])));
+    const plan = readJson(join(root, "state", "memory", "plan.json"));
+    for (const t of plan?.todos ?? []) out.set(`todo:${t.id}`, sha(String(t.text ?? "")));
+    for (const o of plan?.objectives ?? []) out.set(`objective:${o.id}`, sha(JSON.stringify([o.title, o.detail, o.next, o.blocker])));
+    return out;
+  }
+  function track() {
+    const active = open().length > 0;
+    const t = now();
+    let changed = false;
+    const current = sources();
+    for (const [key, hash] of current) {
+      const prev = origins.items[key];
+      const trusted = origins.trusted.includes(key);
+      if (!prev) {
+        origins.items[key] = { hash, tainted: active && !trusted, t };
+        changed = true;
+      } else if (prev.hash !== hash || prev.gone) {
+        prev.hash = hash;
+        delete prev.gone;
+        if (active && !trusted) prev.tainted = true;
+        changed = true;
+      }
+    }
+    // Ce qui a disparu (traité) est gardé un jour : la question peut arriver juste après.
+    for (const [key, item] of Object.entries(origins.items)) {
+      if (current.has(key)) continue;
+      if (!item.gone) (item.gone = t), (changed = true);
+      else if (t - item.gone > 86_400_000) delete origins.items[key], (changed = true);
+    }
+    if (changed) saveOrigins();
+  }
 
   const saveWindows = () => {
     mkdirSync(qdir, { recursive: true });
@@ -173,6 +231,7 @@ export function createGuard({ root, qdir, runMinutes = () => 30, log = () => {},
   }
 
   function check() {
+    track();
     const current = scan();
     if (open().length) return revert(current);
     // Plus aucune session exposée : on oublie celles qui sont finies.
@@ -193,6 +252,7 @@ export function createGuard({ root, qdir, runMinutes = () => 30, log = () => {},
     check,
     expose(session, role) {
       // Ce qui a changé avant l'exposition est accepté d'abord : ce n'est pas la session exposée.
+      track();
       if (!open().length) accept(scan());
       if (!windows[session]) {
         windows[session] = { role, since: now() };
@@ -206,6 +266,59 @@ export function createGuard({ root, qdir, runMinutes = () => 30, log = () => {},
       }
     },
     open: () => open().map(([session, w]) => ({ session, ...w })),
+    // Venu d'une session exposée ? (le disque est relu d'abord : ce qui vient d'apparaître compte)
+    tainted(key) {
+      track();
+      return origins.items[key]?.tainted === true;
+    },
+    // Marquer (jamais démarquer) : un événement tiré d'un fichier marqué, par exemple.
+    taint(key) {
+      track();
+      origins.items[key] = { ...(origins.items[key] ?? { hash: "", t: now() }), tainted: true };
+      saveOrigins();
+    },
+    // Un fichier que le coffre dépose lui-même dans la boîte : jamais marqué.
+    trust(key) {
+      origins.trusted = [...origins.trusted.slice(-200), key];
+      saveOrigins();
+    },
+    // Les sessions pi exposées, abandonnées pour la suite.
+    poison(piSession) {
+      if (!piSession || origins.poisoned.includes(piSession)) return;
+      origins.poisoned = [...origins.poisoned.slice(-500), piSession];
+      saveOrigins();
+    },
+    poisoned: () => [...origins.poisoned],
+    // La personne accepte des changements retirés : ils sont remis en place, et la référence suit.
+    // Pas pendant une exposition, où le gardien les retirerait aussitôt.
+    restore(entry) {
+      if (open().length) throw Object.assign(new Error("une session exposée est en cours : réessaie quand elle sera finie"), { status: 409 });
+      const dir = join(qdir, "held", entry.id);
+      for (const c of entry.changes ?? []) {
+        if (c.item) {
+          const r = RECORDS.find((x) => x.file === c.path);
+          if (!r) continue;
+          const file = join(root, r.file);
+          const unlock = r.lock ? lock(join(root, r.lock)) : () => {};
+          try {
+            const data = readJson(file) ?? (r.file.endsWith("plan.json") ? { objectives: [], todos: [] } : []);
+            const list = [...(r.list(data) ?? [])];
+            const i = list.findIndex((x) => x.id === c.item.id);
+            if (i === -1) list.push(c.item);
+            else for (const f of r.fields) list[i] = { ...list[i], [f]: c.item[f] };
+            const tmp = `${file}.guard.tmp`;
+            writeFileSync(tmp, JSON.stringify(r.set(data, list), null, 2) + "\n");
+            renameSync(tmp, file);
+          } finally {
+            unlock();
+          }
+        } else if (existsSync(join(dir, "files", c.path))) {
+          mkdirSync(dirname(join(root, c.path)), { recursive: true });
+          cpSync(join(dir, "files", c.path), join(root, c.path));
+        }
+      }
+      accept(scan());
+    },
   };
 }
 

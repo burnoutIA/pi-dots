@@ -121,6 +121,7 @@ Toutes les commandes d'un dot acceptent, en premier argument :
 | `./dot send fichier "…"` | lui déposer un fichier |
 | `./dot livrables` | ce qu'il a produit pour toi |
 | `./dot secret` | répondre à une demande de secret du coffre |
+| `./dot quarantaine` | décider de ce que le coffre a mis de côté après un contenu suspect |
 | `./dot veilleur install` | le veilleur : allumer / éteindre les dots depuis Telegram (voir plus bas) |
 | `./dot suivre` | le run de travail en cours, en direct |
 | `./dot attach` | son terminal pi en direct (`Ctrl-b d` pour en sortir sans l'arrêter ; interface `tui`) |
@@ -150,7 +151,7 @@ Valeurs par défaut entre parenthèses :
 | `DOT_LOOP_REPEATS` | même appel d'outil répété dans un run : boucle, le run est arrêté (5) |
 | `DOT_REVIEW_DAYS` | rythme du bilan du dot (7 ; 0 = jamais) |
 | `DOT_LOG_DAYS` | durée de conservation du journal (30) |
-| `DOT_INJECTION_DETECTOR` | le détecteur d'injection appliqué à ce que le dot lit du dehors (`defender` ; `none` : aucun) |
+| `DOT_INJECTION_DETECTOR` | le détecteur d'injection appliqué à ce que le dot lit du dehors (`defender` ; `none` : la protection contre les injections est coupée) |
 | `TZ` | fuseau horaire des tâches planifiées |
 
 ## Interface : terminal ou RPC
@@ -169,7 +170,7 @@ Dans les deux cas, Telegram, `./dot chat` et le reste fonctionnent.
 
 Deux canaux, **une seule conversation** (même mémoire, même plan) : tu peux commencer sur ton téléphone et continuer au terminal. Ses messages spontanés (`notify`) arrivent sur les deux.
 
-**Depuis ta machine** : `./dot chat`. Si le dot est éteint, `./dot chat` et `./dot ask` proposent de l'allumer. Les messages passent par `state/channel/`. En plus des commandes du dot, le chat a les siennes : `/send fichier [message]`, `/secret`, `/allumer`, `/eteindre`, `/quit`.
+**Depuis ta machine** : `./dot chat`. Si le dot est éteint, `./dot chat` et `./dot ask` proposent de l'allumer. Les messages passent par `state/channel/`. En plus des commandes du dot, le chat a les siennes : `/send fichier [message]`, `/secret`, `/quarantaine`, `/allumer`, `/eteindre`, `/quit`.
 
 **Depuis Telegram** : un bot privé, qui n'écoute que toi (`TELEGRAM_OWNER_ID`). Ses réponses y sont mises en forme (titres, gras, listes, code, liens, tableaux).
 
@@ -293,7 +294,7 @@ Toutes les 15 s, un battement lit le plan **sans passer par le modèle**. Il ne 
   - un run est coupé après `DOT_RUN_MINUTES` ;
   - un même appel d'outil répété `DOT_LOOP_REPEATS` fois dans un run, à la suite ou non, arrête le run ;
   - un run est arrêté au-delà de `DOT_RUN_TOKENS` jetons (3 millions, entrée et sortie cumulées) ;
-  - contenu suspect : ce que le dot lit du dehors (pages, mails, sorties de commandes) est analysé avant d'arriver au modèle, sans le solliciter. Un contenu qui ressemble à une injection (« ignore tes consignes et… ») est remis au dot encadré d'un avertissement, comme une donnée à ne pas suivre, et noté au journal. Rien n'est bloqué, mais la session (ce run, ou la conversation jusqu'à `/new`) ne peut plus modifier le dot lui-même : ce qu'elle voudrait retenir, planifier, surveiller, ajouter ou changer comme objectif, ou demander comme secret, est mis de côté par le coffre, qu'elle passe par ses outils ou par une commande (dans `.quarantaine/`, à la racine du dossier du dot, hors de sa portée) et noté au journal ;
+  - contenu suspect : ce que le dot lit du dehors (pages, mails, sorties de commandes) est analysé avant d'arriver au modèle, sans le solliciter. Un contenu qui ressemble à une injection (« ignore tes consignes et… ») est remis au dot encadré d'un avertissement, comme une donnée à ne pas suivre, et noté au journal. Rien n'est bloqué, mais la session (ce run, ou la conversation jusqu'à `/new`) ne peut plus modifier le dot lui-même : ce qu'elle voudrait retenir, planifier, surveiller, ajouter ou changer comme objectif, ou demander comme secret, est mis de côté par le coffre, qu'elle passe par ses outils ou par une commande (dans `.quarantaine/`, à la racine du dossier du dot, hors de sa portée). Ce qu'elle laisse pour la suite (fichier déposé, événement, todo) fait démarrer exposé le run qui en part, et sa session est abandonnée. Le coffre te prévient : tu décides depuis ta machine avec `./dot quarantaine` (accepter ou refuser ; sans réponse, jeté au bout de 7 jours) ;
   - point d'étape : tous les `DOT_CHECKPOINT_TURNS` tours (12), ou après `DOT_FAIL_STREAK` échecs d'outil d'affilée (4), le run doit dire ce qu'il a obtenu, et s'arrêter s'il tourne en rond.
 - **Panne du modèle** : un run qui échoue parce que le modèle ne répond pas n'est pas compté comme un échec. Le travail attend, le dot te prévient une fois, réessaie de plus en plus espacé (2, 4, 8 puis 15 min), et te prévient quand le modèle revient.
 - **`notify`** : le dot ne t'écrit de lui-même que s'il a du nouveau ou besoin de toi, sans limite de nombre. Un message qui redit la même chose qu'un message des 6 dernières heures n'est pas envoyé.

@@ -12,7 +12,8 @@ import { CHECKPOINT_TURNS, FAIL_STREAK, LIVE_FILE, LOOP_REPEATS, RUN_MINUTES, RU
 // Le run est journalisé de bout en bout : début, fin, durée, tours, outils appelés, jetons, et
 // « loop.suspect » dès qu'un même appel d'outil (même nom, mêmes arguments) se répète
 // LOOP_REPEATS fois de suite.
-export interface RunInfo { label: string; kind: string; session: string; objective?: string; todo?: string }
+// exposed : le run part de quelque chose venu d'une session exposée (voir injection.ts) ; il démarre exposé.
+export interface RunInfo { label: string; kind: string; session: string; objective?: string; todo?: string; exposed?: string }
 
 export interface RunResult { ok: boolean; text: string; unavailable: boolean }
 
@@ -28,7 +29,7 @@ export function runWorker(prompt: string, info: RunInfo): Promise<RunResult> {
     const model = [...(process.env.DOT_PROVIDER ? ["--provider", process.env.DOT_PROVIDER] : []), ...(process.env.DOT_MODEL ? ["--model", process.env.DOT_MODEL] : [])];
     const child = spawn("pi", [...extensions, ...model, "-p", "--mode", "json", "--session-id", info.session, "--", prompt], {
       cwd: WORKSPACE,
-      env: { ...process.env, DOT_ROLE: "worker", DOT_OBJECTIVE: info.objective ?? "" },
+      env: { ...process.env, DOT_ROLE: "worker", DOT_OBJECTIVE: info.objective ?? "", DOT_SESSION: info.session, DOT_EXPOSED: info.exposed ?? "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let text = "";

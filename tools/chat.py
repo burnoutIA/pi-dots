@@ -5,6 +5,7 @@
   ./dot chat                   une conversation au clavier (/status /pause /resume /new /send /allumer /eteindre /quit)
   ./dot send fichier [message] déposer un fichier au dot
   ./dot secret                 répondre à une demande de secret du coffre
+  ./dot quarantaine            décider de ce que le coffre a mis de côté (session exposée à une injection)
   ./dot livrables              ce que le dot a produit pour toi
 
 Messages et réponses passent par state/channel. Les secrets, jamais : ils sont remis directement au
@@ -86,6 +87,56 @@ def secrets_loop():
     while request:
         answer_secret(request)
         request = pending()
+
+
+# --- Quarantaine : ce qu'une session exposée voulait changer dans le dot ---
+
+def held():
+    return vault("GET", "/held")
+
+
+def show_held(e) -> None:
+    when = datetime.fromisoformat(e["t"].replace("Z", "+00:00")).astimezone()
+    who = {"run": "un run", "conversation": "la conversation"}.get(e.get("role"), "une session")
+    if e.get("kind") == "fichiers":
+        say(f"\n⏸ {e['id']} · {when:%d/%m %H:%M} · changements retirés par le coffre :")
+        for c in e.get("changes", []):
+            item = c.get("item")
+            detail = f" : {json.dumps(item, ensure_ascii=False)[:300]}" if item else ""
+            say(f"   - {c['change']} · {c['path']}{detail}")
+        for f in e.get("files", []):
+            say(f"   ┌ {f['path']}")
+            for line in f["text"].splitlines()[:25]:
+                say(f"   │ {line}")
+            say("   └")
+    else:
+        say(f"\n⏸ {e['id']} · {when:%d/%m %H:%M} · {who} voulait : {e['tool']} {json.dumps(e.get('input', {}), ensure_ascii=False)[:600]}")
+        by = e.get("exposedBy") or {}
+        if by.get("excerpt"):
+            say(f"   après avoir lu (dans {by.get('tool')}) : « {by['excerpt'][:200]} »")
+
+
+def quarantine_loop(_args=None):
+    """Chaque changement mis de côté : le voir, puis l'accepter ou le refuser."""
+    data = held()
+    items = data.get("held") or []
+    if not data:
+        say("Le coffre ne répond pas (le dot est-il allumé ?).")
+        return
+    if not items:
+        say("Rien n'est mis de côté.")
+        return
+    say(f"{len(items)} changement(s) mis de côté : le dot avait lu un contenu qui ressemble à une injection.")
+    say("Accepte seulement ce que tu reconnais comme voulu. Sans réponse, c'est jeté au bout de 7 jours.")
+    if data.get("exposed"):
+        say("⚠ Une session exposée est encore en cours : des fichiers ne pourront être remis qu'après.")
+    for e in items:
+        show_held(e)
+        choice = input("   [a]ccepter, [r]efuser, ou Entrée pour passer : ").strip().lower()
+        if choice in ("a", "accepter"):
+            say(f"   {vault('POST', '/held/decide', {'id': e['id'], 'accept': True}).get('message', 'Le coffre ne répond pas.')}")
+        elif choice in ("r", "refuser"):
+            say(f"   {vault('POST', '/held/decide', {'id': e['id'], 'accept': False}).get('message', 'Le coffre ne répond pas.')}")
 
 
 # --- Messages ---
@@ -207,13 +258,24 @@ def cmd_livrables(_args):
 
 def cmd_chat(_args):
     ensure_running()
-    say("Conversation avec le dot. /aide pour ses commandes ; ici aussi : /send fichier [message] /secret /livrables /allumer /eteindre /quit")
+    say("Conversation avec le dot. /aide pour ses commandes ; ici aussi : /send fichier [message] /secret /quarantaine /livrables /allumer /eteindre /quit")
     stop = threading.Event()
     waiting: list[str] = []
     busy = threading.Event()  # une saisie de secret est en cours
 
+    known_held: set[str] = set()
+    last_held = 0.0
+
     def background():
+        nonlocal last_held
         while not stop.is_set():
+            if not busy.is_set() and time.time() - last_held > 30:
+                last_held = time.time()
+                ids = {e["id"] for e in held().get("held") or []}
+                if ids - known_held:
+                    say("\n⏸ Le coffre a mis de côté des changements du dot (contenu suspect) : tape /quarantaine")
+                known_held.clear()
+                known_held.update(ids)
             for msg_id in list(waiting):
                 reply = take_reply(msg_id)
                 if reply is not None:
@@ -236,6 +298,13 @@ def cmd_chat(_args):
                 busy.set()
                 try:
                     secrets_loop()
+                finally:
+                    busy.clear()
+                continue
+            if line == "/quarantaine":
+                busy.set()
+                try:
+                    quarantine_loop()
                 finally:
                     busy.clear()
                 continue
@@ -271,7 +340,7 @@ def cmd_chat(_args):
 
 def main(argv):
     command, args = (argv[0], argv[1:]) if argv else ("chat", [])
-    handlers = {"ask": cmd_ask, "chat": cmd_chat, "send": cmd_send, "secret": lambda a: secrets_loop(), "livrables": cmd_livrables}
+    handlers = {"ask": cmd_ask, "chat": cmd_chat, "send": cmd_send, "secret": lambda a: secrets_loop(), "quarantaine": quarantine_loop, "livrables": cmd_livrables}
     if command not in handlers:
         sys.exit(__doc__)
     handlers[command](args)

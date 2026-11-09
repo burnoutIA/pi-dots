@@ -7,7 +7,7 @@
 //
 // Tout vit à la racine du dossier du dot (.quarantaine/), que le coffre monte et que le dot ne voit pas.
 
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 
@@ -62,5 +62,39 @@ export function createQuarantine(dir) {
     }
   }
 
-  return { expose, hold, list };
+  function get(id) {
+    if (!/^[0-9a-f]{8}$/.test(String(id))) return null;
+    try {
+      return JSON.parse(readFileSync(join(held, `${id}.json`), "utf8"));
+    } catch {
+      return null;
+    }
+  }
+
+  // Les fichiers retirés d'une entrée, pour les montrer à la personne (le début de chacun).
+  function files(entry, max = 4000) {
+    return (entry.changes ?? [])
+      .filter((c) => !c.item && !String(c.change).startsWith("supprimé"))
+      .map((c) => {
+        try {
+          return { path: c.path, text: readFileSync(join(held, entry.id, "files", c.path), "utf8").slice(0, max) };
+        } catch {
+          return { path: c.path, text: "" };
+        }
+      });
+  }
+
+  function remove(id) {
+    rmSync(join(held, `${id}.json`), { force: true });
+    rmSync(join(held, id), { recursive: true, force: true });
+  }
+
+  // Ce qui attend depuis plus de `days` jours est jeté.
+  function expire(days = 7, now = Date.now()) {
+    const old = list().filter((e) => now - Date.parse(e.t) > days * 86_400_000);
+    for (const e of old) remove(e.id);
+    return old;
+  }
+
+  return { expose, hold, list, get, files, remove, expire };
 }

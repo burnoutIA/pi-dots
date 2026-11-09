@@ -20,7 +20,7 @@
 # Pour un dot (./dot @nom …, ./dot chemin/du/dossier-ou-fichier.dot …, ou le dot par défaut) :
 #   start / stop / open     allumer / éteindre / allumer puis faire ce que dit « onclic » (double-clic)
 #   restart / reload        redémarrer / reconstruire l'image puis redémarrer (après une modification du code)
-#   chat, ask "…", send fichier, livrables, secret, suivre, rpc, attach, shell
+#   chat, ask "…", send fichier, livrables, secret, quarantaine, suivre, rpc, attach, shell
 #   doctor, journal, status [--json], logs
 set -euo pipefail
 
@@ -452,7 +452,7 @@ UNIT
   suivre)
     python3 -I "$ROOT/tools/suivre.py"
     ;;
-  ask|chat|send|secret|livrables)
+  ask|chat|send|secret|quarantaine|livrables)
     # Le canal local : le même que Telegram, depuis la machine. Les secrets vont directement au coffre.
     python3 -I "$ROOT/tools/chat.py" "$@"
     ;;

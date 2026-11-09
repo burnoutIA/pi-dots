@@ -71,6 +71,7 @@ async function startDot(dotModel) {
       HUB_SOCKET: SOCKET,
       HUB_CWD: WORKSPACE,
       DOT_PI_EXTENSIONS: `-e ${src}/extensions/dot`,
+      DOT_INJECTION_DETECTOR: "none", // pas de coffre ici : la protection contre les injections a ses propres tests
       DOT_PROVIDER: "fake",
       DOT_MODEL: dotModel,
       DOT_TICK_MS: "500",

@@ -42,7 +42,7 @@ import { AUTONOMY, HOME, INBOX, INBOX_DONE, type Kind, LATE_SKIP_MS, MAX_RUNS, R
 import { eventPrompt, mcpDirectSection, memorySection, planPrompt, todoPrompt } from "./prompts.ts";
 import { checkpoints, runWorker } from "./runs.ts";
 import { registerTools } from "./tools.ts";
-import { injections } from "./injection.ts";
+import { injections, prepareRun } from "./injection.ts";
 
 // pi --continue reprend la conversation avec le modèle qu'elle avait, pas le défaut des réglages :
 // un DOT_MODEL changé dans le .dot est donc imposé une fois (un /model ultérieur reste respecté).
@@ -116,9 +116,10 @@ export default function (pi: ExtensionAPI) {
   let timer: ReturnType<typeof setInterval> | null = null;
   const checking = new Set<string>();
 
-  const enqueue = (kind: Kind, text: string, detail: Record<string, unknown> = {}) => {
+  // source : d'où vient l'événement (inbox:<fichier>), pour que le run sache s'il vient d'une session exposée.
+  const enqueue = (kind: Kind, text: string, detail: Record<string, unknown> = {}, source?: string) => {
     const id = newId();
-    changeState((s) => s.events.push({ id, kind, text }));
+    changeState((s) => s.events.push({ id, kind, text, ...(source ? { source } : {}) }));
     log("event.queued", { event: id, kind, ...detail });
   };
 
@@ -178,7 +179,7 @@ export default function (pi: ExtensionAPI) {
       mkdirSync(INBOX_DONE, { recursive: true });
       renameSync(file, join(INBOX_DONE, `${new Date().toISOString().replace(/[:.]/g, "-")}-${name}`));
       const who = name.startsWith("coffre-") ? "Le coffre t'a laissé" : "La personne a déposé";
-      enqueue("boîte", `[dot:boîte] ${stamp()}\n${who} « ${name} » dans la boîte :\n${cut(text)}`, { file: name });
+      enqueue("boîte", `[dot:boîte] ${stamp()}\n${who} « ${name} » dans la boîte :\n${cut(text)}`, { file: name }, `inbox:${name}`);
     }
   }
 
@@ -286,7 +287,8 @@ export default function (pi: ExtensionAPI) {
       const what = event.text.split("\n")[1]?.replace(/\s+/g, " ").trim().slice(0, 70);
       const label = `${event.kind}${what ? ` · ${what}` : ""}`;
       changeState((s) => (s.running = { label, since: now() }));
-      const result = await runWorker(eventPrompt(event), { label, kind: `event:${event.kind}`, session: "dot-evenements" });
+      const prep = await prepareRun("dot-evenements", [`event:${event.id}`, ...(event.source ? [event.source] : [])]);
+      const result = await runWorker(eventPrompt(event), { label, kind: `event:${event.kind}`, session: prep.session, exposed: prep.exposed });
       if (result.unavailable) {
         changeState((s) => delete s.running);
         return onModelDown(result.text);
@@ -318,10 +320,12 @@ export default function (pi: ExtensionAPI) {
       });
       const label = `${objective.title} · ${next.todo.text}`;
       changeState((s) => (s.running = { label, since: now() }));
+      const prep = await prepareRun(sessionId, [`todo:${next.todo.id}`, `objective:${objective.id}`]);
       const result = await runWorker(todoPrompt(readPlan(), next), {
         label,
         kind: next.resume ? "todo:reprise" : "todo",
-        session: sessionId,
+        session: prep.session,
+        exposed: prep.exposed,
         objective: objective.id,
         todo: next.todo.id,
       });
@@ -344,7 +348,8 @@ export default function (pi: ExtensionAPI) {
     const before = fingerprint(plan);
     const label = `${objective.title} · plan`;
     changeState((s) => (s.running = { label, since: now() }));
-    const result = await runWorker(planPrompt(plan, next), { label, kind: "plan", session: sessionId, objective: objective.id });
+    const prep = await prepareRun(sessionId, [`objective:${objective.id}`]);
+    const result = await runWorker(planPrompt(plan, next), { label, kind: "plan", session: prep.session, objective: objective.id, exposed: prep.exposed });
     if (result.unavailable) {
       changeState((s) => delete s.running);
       return onModelDown(result.text);

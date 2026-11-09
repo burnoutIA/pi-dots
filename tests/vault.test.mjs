@@ -409,3 +409,22 @@ test("injections : une session exposée et ce qu'elle voulait changer sont gard�
   const { held } = await (await call("/_vault/held")).json();
   assert.ok(held.some((h) => h.id === id));
 });
+
+test("quarantaine : la personne décide depuis sa machine ; un accord part au dot par un message du coffre", async () => {
+  const post = (path, body) => call(`/_vault/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const a = await (await post("held", { session: "run-2-0", role: "run", tool: "remember", input: { fact: "voulu" } })).json();
+  const b = await (await post("held", { session: "run-2-0", role: "run", tool: "schedule", input: { action: "add", prompt: "piège" } })).json();
+  const list = await admin("/held");
+  assert.ok(list.held.some((e) => e.id === a.id) && list.held.some((e) => e.id === b.id));
+  const refused = await admin("/held/decide", { method: "POST", body: JSON.stringify({ id: b.id, accept: false }) });
+  assert.match(refused.message, /Refusé/);
+  const accepted = await admin("/held/decide", { method: "POST", body: JSON.stringify({ id: a.id, accept: true }) });
+  assert.match(accepted.message, /le dot va le faire/);
+  const left = (await admin("/held")).held.map((e) => e.id);
+  assert.ok(!left.includes(a.id) && !left.includes(b.id));
+  const name = readdirSync(INBOX).find((f) => f.includes(`accepte-${a.id}`));
+  assert.ok(name, "le message d'accord est dans la boîte du dot");
+  assert.match(readFileSync(join(INBOX, name), "utf8"), /remember/);
+  // La décision ne passe que par la porte d'administration, que le dot ne joint pas.
+  assert.equal((await call("/_vault/held/decide", { method: "POST", body: JSON.stringify({ id: a.id, accept: true }) })).status, 404);
+});
