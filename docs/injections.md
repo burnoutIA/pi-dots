@@ -69,20 +69,26 @@ Le reste de son travail continue normalement : elle lit, cherche, produit des li
 
 **Les outils du dot** (`remember`, `forget`, `schedule`, `watch`, `objective`, une demande d'app) : l'extension les met de côté avant exécution (`tool_call`), au lieu de les exécuter. Le nom de l'outil suffit à savoir ce qu'il change. Le dot reçoit une réponse claire : « mis de côté, la session a lu un contenu suspect ; ce sera proposé à la personne ».
 
-**Les fichiers** (`skills/`, `extensions/`, `state/memory/MEMORY.md`) : on ne cherche pas à deviner ce qu'une commande va écrire. `bash` peut écrire de mille façons (redirection, `sed -i`, script, Python, commande encodée), et aucune analyse ne les reconnaît toutes. On regarde le résultat, quel que soit le moyen :
+**Les fichiers** (`skills/`, `extensions/`, `state/memory/MEMORY.md` et `projets/`) : on ne cherche pas à deviner ce qu'une commande va écrire. `bash` peut écrire de mille façons (redirection, `sed -i`, script, Python, commande encodée), et aucune analyse ne les reconnaît toutes. On regarde le résultat, quel que soit le moyen. Le coffre tient une **copie de référence** de ces fichiers et la compare au disque toutes les 5 secondes :
 
-- au début de chaque session, le coffre prend une **empreinte** de ces fichiers ;
-- à la fin de chaque session, exposée ou non, il compare ;
-- si la session était exposée, ce qui a changé est retiré et rangé en **quarantaine** ; sinon, l'empreinte est simplement mise à jour.
+- aucune session exposée en cours : ce qui a changé est accepté, et la référence suit ;
+- une session exposée en cours : ce qui a été ajouté ou modifié est rangé en **quarantaine**, et le disque est remis comme la référence (un fichier supprimé est remis aussi).
 
-Le coffre surveille aussi, de la même façon, ce que les outils du dot écrivent dans `state/memory/`, car `bash` peut y écrire sans passer par eux :
+Juste avant d'ouvrir une exposition, le coffre accepte ce qui a changé jusque-là : un changement fait quelques secondes avant l'alerte n'est pas celui de la session exposée.
 
-- `schedules.json` et `watches.json`, en entier ;
-- `plan.json`, mais seulement ses **objectifs** (ajout, retrait, changement de but). L'avancement des todos y change normalement pendant un run : il n'est pas comparé. Un objectif changé par une session exposée est remis à son état de départ, et le changement est mis en quarantaine.
+Le coffre surveille aussi, de la même façon, ce que les outils du dot écrivent dans `state/memory/`, car `bash` peut y écrire sans passer par eux. Seule la **définition** de chaque élément est comparée, pas son fonctionnement normal :
 
-Le coffre range empreintes et quarantaine à la racine du dossier du dot (`.quarantaine/`), qu'il monte en entier. Le dot, qui ne monte que `state/`, `skills/` et `extensions/`, ne peut pas y toucher.
+- `schedules.json` : le texte, la fréquence, l'heure, les jours, la date unique (pas la prochaine échéance ni le dernier passage) ;
+- `watches.json` : la commande, la fréquence, le texte (pas l'état de la veille) ;
+- `plan.json` : le titre et le détail des **objectifs** (pas leur avancement, ni les todos).
 
-**La fin de l'exposition** : une session exposée le reste jusqu'à sa fin (un run à sa fin, la conversation à `/new`). Pour qu'une fin annoncée trop tôt ne serve à rien, un run reste exposé, pour le coffre, au moins `DOT_RUN_MINUTES` après le signal, soit sa durée maximale.
+Un élément ajouté est retiré, un élément modifié reprend sa définition de référence. Un retrait n'est pas annulé : il ne peut pas installer d'instructions, et annuler la fin d'une tâche unique la relancerait.
+
+Le coffre range la référence et la quarantaine à la racine du dossier du dot (`.quarantaine/baseline/` et `.quarantaine/held/`), qu'il monte en entier. Le dot, qui ne monte que `state/`, `skills/` et `extensions/`, ne peut pas y toucher.
+
+**La fin de l'exposition** : une session exposée le reste jusqu'à sa fin annoncée par l'extension (un run qui s'arrête, la conversation à `/new`). Pour qu'une fin annoncée trop tôt ne serve à rien, un run reste exposé, pour le coffre, au moins `DOT_RUN_MINUTES` après l'alerte, soit sa durée maximale. La conversation exposée le reste après un redémarrage du dot, puisqu'elle reprend son contexte : l'extension retrouve son état auprès du coffre.
+
+Pendant une exposition, le coffre ne sait pas quelle session a écrit un fichier : un changement fait en même temps par une autre session, non exposée, est mis en quarantaine lui aussi. Ça n'arrive qu'après une alerte, et ce qui est mis de côté t'est proposé.
 
 **Ce qui est mis de côté t'est proposé** dans la conversation, avec ce qui a été lu de suspect : tu acceptes, et c'est appliqué, ou tu refuses, et c'est jeté. Ce qui n'a pas de réponse au bout de 7 jours est jeté.
 
@@ -97,6 +103,6 @@ Ce que ça fait : arrêter les injections courantes, et surtout **les empêcher 
 
 1. ✅ Defender dans l'image, analyse dans `tool_result`, avertissement et journal (`injection.suspect`, visible dans `journal -p` et `doctor`).
 2. ✅ Signal d'exposition de l'extension vers le coffre (`POST /_vault/exposed`), et mise de côté des outils du dot (`tool_call`, `POST /_vault/held`).
-3. Empreintes de début et de fin de session, et quarantaine, tenues par le coffre : skills, extensions, mémoire, tâches planifiées, veilles et objectifs du plan.
+3. ✅ Empreintes de début et de fin de session, et quarantaine, tenues par le coffre : skills, extensions, mémoire, tâches planifiées, veilles et objectifs du plan.
 4. Proposition de ce qui a été mis de côté, dans la conversation.
 5. Mise à jour du README (ce que le dot fait d'un contenu suspect, et ce qui t'est proposé).

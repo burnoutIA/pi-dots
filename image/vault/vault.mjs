@@ -33,6 +33,7 @@ import { patchVault, readVault } from "../dotfile.mjs";
 import { readMail } from "./imap.mjs";
 import { createGate } from "./gate.mjs";
 import { createQuarantine } from "./quarantine.mjs";
+import { createGuard } from "./guard.mjs";
 
 const CONFIG_FILE = process.env.VAULT_CONFIG ?? "/vault/dot.dot";
 // Le même fichier, vu de la machine : pour dire à la personne où il est.
@@ -71,6 +72,14 @@ function log(type, data = {}) {
 
 let vault = { secrets: {}, allow: [] };
 const quarantine = createQuarantine(QUARANTINE);
+// Le gardien : ce qu'une session exposée change dans le dot sans passer par ses outils (voir guard.mjs).
+const GUARD_MS = Number(process.env.VAULT_GUARD_MS ?? 5000);
+const guard = createGuard({
+  root: dirname(CONFIG_FILE),
+  qdir: QUARANTINE,
+  runMinutes: () => Number(process.env.VAULT_RUN_MINUTES || 30),
+  log,
+});
 
 // Les secrets vivent dans le nœud `vault` du fichier du dot (<nom>.dot) ; le coffre est le seul à le lire.
 // Lit et vérifie ce nœud ; une erreur dit ce qui ne va pas.
@@ -703,6 +712,7 @@ async function control(req, res, path) {
     try {
       if (path === "exposed") {
         const e = quarantine.expose(body);
+        guard.expose(e.session, e.role);
         log("injection.exposed", { session: e.session, by: e.role, tool: e.tool, level: e.level, excerpt: e.excerpt });
         return reply(res, 200, { ok: true });
       }
@@ -714,6 +724,19 @@ async function control(req, res, path) {
     }
   }
   if (req.method === "GET" && path === "held") return reply(res, 200, { held: quarantine.list() });
+  // La fin d'une session (un run qui s'arrête, la conversation à /new) ; et les sessions exposées en cours.
+  if (req.method === "POST" && path === "ended") {
+    let body;
+    try {
+      body = await readBody(req);
+    } catch {
+      return reply(res, 400, "corps JSON attendu");
+    }
+    guard.check(); // ce que la session a laissé est jugé tant qu'elle compte encore comme exposée
+    guard.end(String(body.session ?? ""));
+    return reply(res, 200, { ok: true });
+  }
+  if (req.method === "GET" && path === "exposure") return reply(res, 200, { open: guard.open() });
   return reply(res, 404, "GET /_vault/secrets, POST /_vault/request, POST /_vault/extend, POST /_vault/mail");
 }
 
@@ -808,6 +831,19 @@ server.listen(PORT, "0.0.0.0", () => {
   if (pending) (expired() ? finish("expired") : ask(true)).catch(() => {});
 });
 setInterval(() => expired() && finish("expired").catch(() => {}), 60_000).unref();
+// Le gardien : référence prise au démarrage, puis comparaison régulière.
+try {
+  guard.start();
+} catch (error) {
+  log("injection.guard", { error: error.message });
+}
+setInterval(() => {
+  try {
+    guard.check();
+  } catch (error) {
+    log("injection.guard", { error: error.message });
+  }
+}, GUARD_MS).unref();
 // La personne peut écrire dans le fichier à tout moment : il est relu dès qu'il change.
 setInterval(() => reload().catch((error) => log("vault.config.error", { error: error.message })), Number(process.env.VAULT_RELOAD_MS ?? 2000)).unref();
 

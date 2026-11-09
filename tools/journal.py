@@ -17,7 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 LOGS = Path(os.environ.get("DOT_STATE") or Path(__file__).resolve().parent.parent / "state") / "logs"
-PROBLEMS = {"telegram.conflict", "notify.blocked", "model.down", "model.up", "loop.suspect", "run.capped", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error", "injection.suspect", "injection.detector", "injection.held", "injection.held.lost", "injection.signal"}
+PROBLEMS = {"telegram.conflict", "notify.blocked", "model.down", "model.up", "loop.suspect", "run.capped", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error", "injection.suspect", "injection.detector", "injection.held", "injection.held.lost", "injection.signal", "injection.reverted", "injection.guard"}
 
 
 def hour(iso: str) -> str:
@@ -111,6 +111,12 @@ def describe(e) -> str:
         return f"⏸ non fait (coffre injoignable, rien de gardé) : {e.get('tool')}"
     if t == "injection.signal":
         return f"⚠ le coffre n'a pas pu être prévenu d'une session exposée : {short(e.get('error'), 120)}"
+    if t == "injection.reverted":
+        return f"⏸ RETIRÉ ({e.get('id')}) : changements d'une session exposée, mis en quarantaine · " + " ; ".join((e.get("changes") or [])[:5])
+    if t == "injection.guard":
+        return f"⚠ gardien du coffre en erreur : {short(e.get('error'), 150)}"
+    if t == "injection.resumed":
+        return "· la conversation reprend exposée (avant le redémarrage)"
     if t == "injection.cleared":
         return f"· nouvelle conversation : la session n'est plus exposée"
     if t == "injection.detector":

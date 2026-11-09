@@ -110,13 +110,34 @@ export function injections(pi: ExtensionAPI) {
   let session = `${ROLE}-${process.pid}-${n}`;
   let exposed: { tool: string; level: string; excerpt: string } | null = null;
 
-  pi.on("session_start", (event: any) => {
+  pi.on("session_start", async (event: any) => {
     void load(); // chargé d'avance : le premier résultat n'attend pas
     if (event?.reason === "new" || event?.reason === "resume" || event?.reason === "fork") {
+      // Une autre conversation : la précédente est finie pour le coffre.
       if (exposed) log("injection.cleared", { session });
+      await post("ended", { session }).catch(() => {});
       session = `${ROLE}-${process.pid}-${++n}`;
       exposed = null;
+      return;
     }
+    // Au démarrage, la conversation reprend son contexte (--continue) : si elle était exposée, elle
+    // l'est encore. Le coffre s'en souvient.
+    if (ROLE === "conversation") {
+      try {
+        const res = await fetch(`${VAULT}/_vault/exposure`, { signal: AbortSignal.timeout(5000) });
+        const open = ((await res.json()).open ?? []).filter((w: any) => w.role === "conversation");
+        if (open.length) {
+          session = open[0].session;
+          exposed = { tool: "(avant le redémarrage)", level: "", excerpt: "" };
+          log("injection.resumed", { session });
+        }
+      } catch {}
+    }
+  });
+
+  // Un run qui s'arrête est fini pour le coffre ; la conversation, elle, ne finit qu'à /new.
+  pi.on("session_shutdown", async () => {
+    if (ROLE === "run") await post("ended", { session }).catch(() => {});
   });
 
   pi.on("tool_result", async (event: any) => {

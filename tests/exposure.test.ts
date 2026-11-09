@@ -12,7 +12,7 @@ const vault = http.createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", () => {
-    calls.push({ path: req.url!, body: JSON.parse(body || "{}") });
+    if (req.method === "POST") calls.push({ path: req.url!, body: JSON.parse(body || "{}") });
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify(req.url === "/_vault/held" ? { id: "abcd1234" } : { ok: true }));
   });
@@ -35,7 +35,7 @@ const { injections } = await import(`${src}/extensions/dot/injection.ts`);
 
 const handlers: Record<string, (e: any) => any> = {};
 injections({ on: (name: string, fn: any) => (handlers[name] = fn) });
-handlers.session_start({ reason: "startup" });
+await handlers.session_start({ reason: "startup" });
 const result = (text: string, toolName = "bash") => handlers.tool_result({ toolName, input: { command: "curl x" }, content: [{ type: "text", text }] });
 const call = (toolName: string, input: any) => handlers.tool_call({ toolName, input });
 
@@ -67,7 +67,8 @@ test("une session exposée : un changement du dot est mis de côté chez le coff
 });
 
 test("/new : la conversation repart non exposée", async () => {
-  handlers.session_start({ reason: "new" });
+  await handlers.session_start({ reason: "new" });
+  assert.equal(calls.at(-1).path, "/_vault/ended", "la conversation précédente est finie pour le coffre");
   assert.equal(await call("remember", { fact: "x" }), undefined);
 });
 
