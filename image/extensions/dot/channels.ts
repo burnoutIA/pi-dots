@@ -64,6 +64,8 @@ export const PROBLEM_TYPES: Record<string, string> = {
   "telegram.conflict": "conflit Telegram",
   "oauth.error": "jeton non renouvelé",
   "skills.broken": "skill non chargé",
+  "injection.suspect": "contenu suspect",
+  "injection.detector": "détecteur d'injection indisponible",
 };
 export function problems(): string {
   const since = Date.now() - 24 * 3600_000;
@@ -71,7 +73,7 @@ export function problems(): string {
   if (!found.length) return "Aucun problème ces dernières 24 heures.";
   return [
     `${found.length} problème(s) ces dernières 24 heures. Les derniers :`,
-    ...found.slice(-10).map((e) => `${hhmm(e.t)} ${PROBLEM_TYPES[e.type] ?? "run en échec"} · ${String(e.label ?? e.error ?? e.reason ?? e.host ?? e.call ?? "").slice(0, 90)}`),
+    ...found.slice(-10).map((e) => `${hhmm(e.t)} ${PROBLEM_TYPES[e.type] ?? "run en échec"} · ${String(e.label ?? e.excerpt ?? e.error ?? e.reason ?? e.host ?? e.call ?? "").slice(0, 90)}`),
   ].join("\n");
 }
 

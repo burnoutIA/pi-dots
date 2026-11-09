@@ -17,7 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 LOGS = Path(os.environ.get("DOT_STATE") or Path(__file__).resolve().parent.parent / "state") / "logs"
-PROBLEMS = {"telegram.conflict", "notify.blocked", "model.down", "model.up", "loop.suspect", "run.capped", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error"}
+PROBLEMS = {"telegram.conflict", "notify.blocked", "model.down", "model.up", "loop.suspect", "run.capped", "todo.stuck", "heartbeat.error", "pi.exit", "schedule.skipped", "net.denied", "net.error", "oauth.error", "injection.suspect", "injection.detector"}
 
 
 def hour(iso: str) -> str:
@@ -101,6 +101,10 @@ def describe(e) -> str:
         return f"⚠ skills non chargés (en-tête manquant) : {', '.join(e.get('skills') or [])}"
     if t == "mail.read":
         return f"✉ coffre : mails lus ({e.get('action')} {e.get('folder', '')}, {e.get('count')}) sur {e.get('host')}"
+    if t == "injection.suspect":
+        return f"⚠ CONTENU SUSPECT ({e.get('level')}, {e.get('score')}) dans {e.get('tool')} : « {short(e.get('excerpt'), 100)} » · {short(e.get('source'), 80)}"
+    if t == "injection.detector":
+        return f"⚠ détecteur d'injection indisponible : {short(e.get('error'), 150)}"
     if t == "notify.blocked":
         return f"⛔ notify bloqué ({e.get('reason')}) : {e.get('text', '')[:80]}"
     if t == "model.down":

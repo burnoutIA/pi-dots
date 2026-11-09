@@ -23,6 +23,7 @@
 //   tools.ts     les outils du dot (notify, objective, todo, schedule, watch, remember, budget…)
 //   budget.ts    le budget de contexte : coût des outils déclarés, usage réel
 //   channels.ts  les commandes proposées à la personne sur ses canaux
+//   injection.ts les résultats d'outils venus du dehors, analysés avant le modèle
 //   plan.ts, memory.ts, usage.ts, schedule.ts, outage.ts, live.ts, log.ts : la logique pure, testée seule
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -41,6 +42,7 @@ import { AUTONOMY, HOME, INBOX, INBOX_DONE, type Kind, LATE_SKIP_MS, MAX_RUNS, R
 import { eventPrompt, mcpDirectSection, memorySection, planPrompt, todoPrompt } from "./prompts.ts";
 import { checkpoints, runWorker } from "./runs.ts";
 import { registerTools } from "./tools.ts";
+import { injections } from "./injection.ts";
 
 // pi --continue reprend la conversation avec le modèle qu'elle avait, pas le défaut des réglages :
 // un DOT_MODEL changé dans le .dot est donc imposé une fois (un /model ultérieur reste respecté).
@@ -102,6 +104,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   registerTools(pi);
+  injections(pi); // conversation et runs : tout résultat venu du dehors est analysé
   if (WORKER) {
     checkpoints(pi);
     return;

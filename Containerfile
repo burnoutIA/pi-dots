@@ -55,6 +55,26 @@ RUN set -eux; \
     mv "/tmp/ctx_optimizer-${CTX_OPTIMIZER_COMMIT}/pi/ctx-optimizer" /opt/dot-vendor/extensions/ctx-optimizer; \
     rm -rf "/tmp/ctx_optimizer-${CTX_OPTIMIZER_COMMIT}"
 
+# --- Détecteur d'injection (image/detectors/defender.mjs) ---------------------
+# StackOne Defender et son classifieur local (ONNX, sur processeur). On ne garde que les binaires
+# linux x64 sans GPU : environ 130 Mo au lieu de 730.
+ARG DEFENDER_VERSION=0.9.4
+ARG ONNXRUNTIME_NODE_VERSION=1.21.0
+ARG TRANSFORMERS_VERSION=3.8.1
+RUN set -eux; \
+    d=/opt/dot-vendor/detectors/defender; mkdir -p "$d"; cd "$d"; \
+    echo '{"name":"dot-detector-defender","private":true}' > package.json; \
+    npm install --no-audit --no-fund --save-exact \
+      "@stackone/defender@${DEFENDER_VERSION}" \
+      "onnxruntime-node@${ONNXRUNTIME_NODE_VERSION}" \
+      "@huggingface/transformers@${TRANSFORMERS_VERSION}"; \
+    ort=node_modules/onnxruntime-node/bin/napi-v3; \
+    rm -rf "$ort/darwin" "$ort/win32" "$ort/linux/arm64" \
+      "$ort/linux/x64/libonnxruntime_providers_cuda.so" "$ort/linux/x64/libonnxruntime_providers_tensorrt.so" \
+      node_modules/onnxruntime-web; \
+    npm cache clean --force; \
+    chmod -R a+rX /opt/dot-vendor
+
 # --- Ce que le dépôt apporte : consignes, extensions, démarrage ---------------
 COPY image/ /opt/dot/
 # Le coffre (dot-vault) tourne depuis la même image : node /opt/dot/vault/vault.mjs

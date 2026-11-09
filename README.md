@@ -150,6 +150,7 @@ Valeurs par défaut entre parenthèses :
 | `DOT_LOOP_REPEATS` | même appel d'outil répété dans un run : boucle, le run est arrêté (5) |
 | `DOT_REVIEW_DAYS` | rythme du bilan du dot (7 ; 0 = jamais) |
 | `DOT_LOG_DAYS` | durée de conservation du journal (30) |
+| `DOT_INJECTION_DETECTOR` | le détecteur d'injection appliqué à ce que le dot lit du dehors (`defender` ; `none` : aucun) |
 | `TZ` | fuseau horaire des tâches planifiées |
 
 ## Interface : terminal ou RPC
@@ -292,6 +293,7 @@ Toutes les 15 s, un battement lit le plan **sans passer par le modèle**. Il ne 
   - un run est coupé après `DOT_RUN_MINUTES` ;
   - un même appel d'outil répété `DOT_LOOP_REPEATS` fois dans un run, à la suite ou non, arrête le run ;
   - un run est arrêté au-delà de `DOT_RUN_TOKENS` jetons (3 millions, entrée et sortie cumulées) ;
+  - contenu suspect : ce que le dot lit du dehors (pages, mails, sorties de commandes) est analysé avant d'arriver au modèle, sans le solliciter. Un contenu qui ressemble à une injection (« ignore tes consignes et… ») est remis au dot encadré d'un avertissement, comme une donnée à ne pas suivre, et noté au journal. Rien n'est bloqué ;
   - point d'étape : tous les `DOT_CHECKPOINT_TURNS` tours (12), ou après `DOT_FAIL_STREAK` échecs d'outil d'affilée (4), le run doit dire ce qu'il a obtenu, et s'arrêter s'il tourne en rond.
 - **Panne du modèle** : un run qui échoue parce que le modèle ne répond pas n'est pas compté comme un échec. Le travail attend, le dot te prévient une fois, réessaie de plus en plus espacé (2, 4, 8 puis 15 min), et te prévient quand le modèle revient.
 - **`notify`** : le dot ne t'écrit de lui-même que s'il a du nouveau ou besoin de toi, sans limite de nombre. Un message qui redit la même chose qu'un message des 6 dernières heures n'est pas envoyé.
@@ -320,7 +322,7 @@ Le dot tient un journal technique horodaté, avec un fichier par jour dans `stat
 
 Ce qui est noté :
 - **les runs** : début, fin, durée, tours, outils appelés, jetons, erreur éventuelle ;
-- **les problèmes** : boucles (arrêtées), todos bloqués, runs coupés ou tués faute de mémoire, pannes et retours du modèle, messages bloqués, conflits Telegram (un autre programme qui lit le même bot) ;
+- **les problèmes** : boucles (arrêtées), todos bloqués, runs coupés ou tués faute de mémoire, pannes et retours du modèle, messages bloqués, conflits Telegram (un autre programme qui lit le même bot), contenus suspects (injection possible) ;
 - **la vie du dot** : démarrages et arrêts (dont à distance ⏻), plan, événements, `notify`, mémoire, choix de budget ;
 - **le coffre** : demandes de secrets, refus et erreurs, lectures de mails, et chaque sortie réseau avec `--reseau`.
 
